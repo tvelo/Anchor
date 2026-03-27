@@ -223,6 +223,10 @@ export default function Home() {
       const { data: prof } = await supabase.from('users').select('display_name').eq('id', user.id).maybeSingle()
       const dn = prof?.display_name || user.user_metadata?.display_name || user.email?.split('@')[0] || 'you'
       setName(dn)
+      // Ensure a users row exists so profile edits work
+      if (!prof) {
+        await supabase.from('users').upsert({ id: user.id, display_name: dn }).catch(() => {})
+      }
 
       await Promise.all([
         loadSpaces(user.id),

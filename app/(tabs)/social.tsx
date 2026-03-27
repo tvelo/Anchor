@@ -1503,13 +1503,17 @@ export default function SocialScreen() {
   useEffect(() => { if (userId) { loadFYP(); loadFollowing(); loadDiscover(); } }, [userId]);
 
   const init = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    setUserId(user.id);
-    const { data: canvas } = await supabase.from('canvases').select('id').or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`).limit(1).maybeSingle();
-    if (canvas) setCanvasId(canvas.id);
-    const { data: profile } = await supabase.from('social_profiles').select('*').eq('id', user.id).maybeSingle();
-    if (profile) setMyProfile(profile as SocialProfile);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      setUserId(user.id);
+      const { data: canvas } = await supabase.from('canvases').select('id').or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`).limit(1).maybeSingle();
+      if (canvas) setCanvasId(canvas.id);
+      const { data: profile } = await supabase.from('social_profiles').select('*').eq('id', user.id).maybeSingle();
+      if (profile) setMyProfile(profile as SocialProfile);
+    } catch (e) {
+      console.log('[Social] init error:', e);
+    }
   };
 
   const profileCacheRef = useRef<Record<string, SocialProfile>>({});
@@ -1546,27 +1550,41 @@ export default function SocialScreen() {
 
   const loadFYP = async () => {
     setFeedLoading(true);
-    const { data } = await supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(80);
-    // ── PATCH 2: apply privacy filter ────────────────────────────────────────
-    setFypPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
-    setFeedLoading(false);
+    try {
+      const { data } = await supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(80);
+      setFypPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
+    } catch (e) {
+      console.log('[Social] loadFYP error:', e);
+      setFypPosts([]);
+    } finally {
+      setFeedLoading(false);
+    }
   };
 
   const loadFollowing = async () => {
-    const { data: follows } = await supabase.from('social_follows').select('following_id').eq('follower_id', userId);
-    const followIds = (follows ?? []).map((f: any) => f.following_id);
-    if (!followIds.length) { setFollowingPosts([]); return; }
-    const { data } = await supabase.from('social_posts').select('*').in('user_id', followIds).order('created_at', { ascending: false }).limit(80);
-    // ── PATCH 3: apply privacy filter ────────────────────────────────────────
-    setFollowingPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
+    try {
+      const { data: follows } = await supabase.from('social_follows').select('following_id').eq('follower_id', userId);
+      const followIds = (follows ?? []).map((f: any) => f.following_id);
+      if (!followIds.length) { setFollowingPosts([]); return; }
+      const { data } = await supabase.from('social_posts').select('*').in('user_id', followIds).order('created_at', { ascending: false }).limit(80);
+      setFollowingPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
+    } catch (e) {
+      console.log('[Social] loadFollowing error:', e);
+      setFollowingPosts([]);
+    }
   };
 
   const loadDiscover = async () => {
     setDiscoverLoading(true);
-    const { data } = await supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(80);
-    // ── PATCH 4: apply privacy filter ────────────────────────────────────────
-    setDiscoverPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
-    setDiscoverLoading(false);
+    try {
+      const { data } = await supabase.from('social_posts').select('*').order('created_at', { ascending: false }).limit(80);
+      setDiscoverPosts(await filterByPrivacy(await enrichPosts(data ?? []), userId));
+    } catch (e) {
+      console.log('[Social] loadDiscover error:', e);
+      setDiscoverPosts([]);
+    } finally {
+      setDiscoverLoading(false);
+    }
   };
 
   const handleDeletePost = async (postId: string) => {

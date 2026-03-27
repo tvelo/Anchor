@@ -228,27 +228,36 @@ export default function SettingsScreen() {
   }, []);
 
   const loadUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    setUser({ email: user.email ?? '', id: user.id });
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      setUser({ email: user.email ?? '', id: user.id });
 
-    const { data } = await supabase.from('users')
-      .select('display_name, theme, location_tags_enabled')
-      .eq('id', user.id).maybeSingle();
+      const { data } = await supabase.from('users')
+        .select('display_name, theme, location_tags_enabled')
+        .eq('id', user.id).maybeSingle();
 
-    if (data?.display_name) setDisplayName(data.display_name);
-    else setDisplayName(user.email?.split('@')[0] ?? 'User');
-    if (data?.location_tags_enabled) setLocationTagsState(data.location_tags_enabled);
+      if (data?.display_name) setDisplayName(data.display_name);
+      else {
+        const fallback = user.email?.split('@')[0] ?? 'User';
+        setDisplayName(fallback);
+        // Ensure a users row exists so future edits work
+        await supabase.from('users').upsert({ id: user.id, display_name: fallback }).catch(() => {});
+      }
+      if (data?.location_tags_enabled) setLocationTagsState(data.location_tags_enabled);
 
-    if (data?.theme === 'light' || data?.theme === 'dark' || data?.theme === 'system') {
-      setTheme(data.theme as Theme);
+      if (data?.theme === 'light' || data?.theme === 'dark' || data?.theme === 'system') {
+        setTheme(data.theme as Theme);
+      }
+
+      const { data: profile } = await supabase.from('social_profiles').select('privacy').eq('id', user.id).maybeSingle();
+      if (profile) { setHasProfile(true); setPrivacy((profile.privacy as any) || 'public'); }
+
+      const { data: plus } = await supabase.from('anchor_plus').select('id').eq('user_id', user.id).maybeSingle();
+      setIsPlusMember(!!plus);
+    } catch (e) {
+      console.log('[Settings] loadUser error:', e);
     }
-
-    const { data: profile } = await supabase.from('social_profiles').select('privacy').eq('id', user.id).maybeSingle();
-    if (profile) { setHasProfile(true); setPrivacy((profile.privacy as any) || 'public'); }
-
-    const { data: plus } = await supabase.from('anchor_plus').select('id').eq('user_id', user.id).maybeSingle();
-    setIsPlusMember(!!plus);
   };
 
   const handleSetTheme = async (t: Theme) => {

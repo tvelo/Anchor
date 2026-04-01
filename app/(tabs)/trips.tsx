@@ -337,6 +337,10 @@ function CreateCapsuleModal({
       Alert.alert('Name required', 'Give your travel capsule a name.');
       return;
     }
+    if (!canvasId) {
+      Alert.alert('Error', 'No canvas found. Please restart the app and try again.');
+      return;
+    }
     if (visibility === 'locked' && unlockMode !== 'manual' && !unlockDate.trim()) {
       Alert.alert('Unlock date required', 'Enter a date or switch to manual unlock.');
       return;
@@ -1120,7 +1124,6 @@ export default function TripsScreen() {
               ]);
               return;
             }
-            setShowCreate(true);
           }}
         >
           <Text style={styles.newCapsuleBtnText}>+ New</Text>
@@ -1154,6 +1157,10 @@ export default function TripsScreen() {
             onPress={() => {
               if (!isPaid) {
                 router.push('/plus' as any);
+                return;
+              }
+              if (!canvasId) {
+                Alert.alert('Error', 'No canvas found. Please restart the app and try again.');
                 return;
               }
               setShowCreate(true);

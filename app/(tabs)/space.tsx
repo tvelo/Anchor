@@ -1,9 +1,18 @@
 import * as Haptics from 'expo-haptics'
 import * as ImagePicker from 'expo-image-picker'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ActivityIndicator, Alert, Animated, Image, RefreshControl, ScrollView,
-  Share, StyleSheet, Text, TouchableOpacity, View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Image,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { PromptModal } from '../../components/PromptModal'
@@ -13,6 +22,11 @@ import { storageUploadUrl } from '../../lib/storage'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/ThemeContext'
 import { getLimits, useAnchorPlus } from '../../lib/useAnchorPlus'
+import { useBiometricSetting } from '../../lib/useBiometricSetting'
+
+// ─── Free-plan caps ───────────────────────────────────────────────────────────
+// How many spaces (total, including invited) a free user may be a member of
+const FREE_SPACE_CAP = 3
 
 type Space = {
   id: string
@@ -21,6 +35,12 @@ type Space = {
   background_value: string | null
   memberCount: number
   lastActivity: string | null
+}
+
+type Friend = {
+  id: string
+  display_name: string | null
+  username: string | null
 }
 
 const SPACE_COLORS = ['#C8A96E', '#B8A9D9', '#6BBED4', '#D46B8A', '#7BC47B', '#D4B66B']
@@ -39,14 +59,12 @@ function timeAgo(iso: string) {
 const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  // Header
   header: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14 },
   headerTitle: { fontSize: 34, fontWeight: '800', color: C.textPrimary, fontFamily: 'Georgia', letterSpacing: -0.8 },
   headerSub: { fontSize: 13, color: C.textSecondary, marginTop: 3 },
   newBtn: { backgroundColor: C.accent, borderRadius: 22, paddingHorizontal: 18, paddingVertical: 10, alignSelf: 'flex-end' },
   newBtnText: { color: C.bg, fontWeight: '800', fontSize: 13 },
   list: { padding: 16, gap: 14, paddingBottom: 48 },
-  // Space card
   spaceCard: { borderRadius: 22, overflow: 'hidden', borderWidth: 1, borderColor: C.border, backgroundColor: C.surface },
   accentBar: { height: 5 },
   spaceCardBody: { flexDirection: 'row', alignItems: 'center', padding: 16, gap: 14 },
@@ -60,14 +78,6 @@ const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.crea
   inviteChip: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1 },
   inviteChipText: { fontSize: 12, fontWeight: '700' },
   chevron: { fontSize: 22, color: C.textMuted, fontWeight: '200' },
-  // Locked ghost card
-  lockedCard: { borderRadius: 22, borderWidth: 1.5, borderColor: C.border, borderStyle: 'dashed', backgroundColor: C.surface, padding: 18, gap: 10 },
-  lockedInner: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  lockedLock: { fontSize: 28 },
-  lockedTitle: { fontSize: 15, fontWeight: '700', color: C.textMuted },
-  lockedSub: { fontSize: 12, color: C.accent, marginTop: 2 },
-  lockedHint: { fontSize: 11, color: C.textMuted, fontStyle: 'italic', textAlign: 'center' },
-  // Empty
   empty: { alignItems: 'center', paddingTop: 80, gap: 16, paddingHorizontal: 32 },
   emptyIconWrap: { width: 88, height: 88, borderRadius: 28, backgroundColor: C.accentSoft, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
   emptyIcon: { fontSize: 40 },
@@ -75,6 +85,21 @@ const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.crea
   emptyText: { fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 21, maxWidth: 280 },
   emptyBtn: { backgroundColor: C.accent, borderRadius: 24, paddingHorizontal: 28, paddingVertical: 14, marginTop: 4 },
   emptyBtnText: { color: C.bg, fontWeight: '800', fontSize: 15 },
+  // Invite modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: C.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: 44, borderTopWidth: 1, borderColor: C.border, maxHeight: '70%' },
+  modalHandle: { width: 40, height: 4, backgroundColor: C.border, borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: C.textPrimary, marginBottom: 4 },
+  modalSub: { fontSize: 13, color: C.textSecondary, marginBottom: 20 },
+  friendRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: C.border },
+  friendAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.surfaceHigh, alignItems: 'center', justifyContent: 'center' },
+  friendAvatarText: { color: C.accent, fontSize: 16, fontWeight: '800' },
+  friendName: { flex: 1, color: C.textPrimary, fontSize: 15, fontWeight: '600' },
+  friendUsername: { color: C.textSecondary, fontSize: 12, marginTop: 1 },
+  addFriendBtn: { backgroundColor: C.accent, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
+  addFriendBtnText: { color: C.bg, fontWeight: '700', fontSize: 13 },
+  cancelBtn: { marginTop: 16, backgroundColor: C.surfaceHigh, borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: C.border },
+  cancelBtnText: { color: C.textPrimary, fontSize: 15 },
 })
 
 export default function SpaceTab() {
@@ -87,14 +112,93 @@ export default function SpaceTab() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null)
-  const FREE_LIMIT = 1
   const [spaceMenuId, setSpaceMenuId] = useState<string | null>(null)
   const [showCreatePrompt, setShowCreatePrompt] = useState(false)
+  const { prompt: biometricPrompt } = useBiometricSetting()
   const [coverUploadingId, setCoverUploadingId] = useState<string | null>(null)
+
+  // ── Invite (friend-picker) state ──────────────────────────────────────────
+  const [inviteModal, setInviteModal] = useState<{ spaceId: string; spaceName: string } | null>(null)
+  const [inviteFriends, setInviteFriends] = useState<Friend[]>([])
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [addingFriendId, setAddingFriendId] = useState<string | null>(null)
 
   // Entrance animations
   const headerAnim = useRef(new Animated.Value(0)).current
   const cardAnims = useRef(Array.from({ length: 6 }, () => ({ y: new Animated.Value(24), o: new Animated.Value(0) }))).current
+
+  // ── Open invite modal + load friends ─────────────────────────────────────
+  async function openInviteModal(spaceId: string, spaceName: string) {
+    setInviteModal({ spaceId, spaceName })
+    setInviteLoading(true)
+    setInviteFriends([])
+    try {
+      const { data } = await supabase
+        .from('friends')
+        .select(`
+          requester_id, addressee_id,
+          requester:requester_id(id, display_name, username),
+          addressee:addressee_id(id, display_name, username)
+        `)
+        .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
+        .eq('status', 'accepted')
+      const friends = (data ?? []).map((f: any) =>
+        f.requester_id === userId ? f.addressee : f.requester
+      ) as Friend[]
+      setInviteFriends(friends)
+    } catch (e) {
+      console.log('invite load error', e)
+    }
+    setInviteLoading(false)
+  }
+
+  // ── Add friend to space — with free-plan cap check ────────────────────────
+  async function addFriendToSpace(friend: Friend) {
+    if (!inviteModal) return
+    setAddingFriendId(friend.id)
+    try {
+      // 1. Check if the invitee is on Anchor Plus
+      const { data: friendPlus } = await supabase
+        .from('anchor_plus')
+        .select('id')
+        .eq('user_id', friend.id)
+        .maybeSingle()
+
+      // 2. If free plan, count total spaces they are already a member of
+      if (!friendPlus) {
+        const { count } = await supabase
+          .from('space_members')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', friend.id)
+
+        if ((count ?? 0) >= FREE_SPACE_CAP) {
+          Alert.alert(
+            'Cannot invite',
+            `${friend.display_name || '@' + friend.username} is on the free plan and has already reached the ${FREE_SPACE_CAP}-space limit. They would need Anchor Plus to join more spaces.`
+          )
+          setAddingFriendId(null)
+          return
+        }
+      }
+
+      // 3. Insert via SECURITY DEFINER function to avoid RLS policy cycle
+      const { error } = await supabase.rpc('add_space_member', {
+        p_space_id: inviteModal.spaceId,
+        p_user_id: friend.id,
+      })
+      if (error && !error.message.includes('23505') && !error.message.toLowerCase().includes('duplicate')) {
+        throw error
+      }
+      Alert.alert(
+        'Added ✓',
+        `${friend.display_name || '@' + friend.username} has been added to "${inviteModal.spaceName}".`
+      )
+      setInviteModal(null)
+    } catch (e: any) {
+      Alert.alert('Error', e.message)
+    }
+    setAddingFriendId(null)
+  }
 
   async function uploadSpaceCover(spaceId: string) {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
@@ -138,10 +242,26 @@ export default function SpaceTab() {
       if (!user) return
       setUserId(user.id)
 
-      const { data: canvases } = await supabase.from('canvases')
-        .select('id, name, owner_id, background_value')
-        .or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`)
+      // Fetch spaces the user is a member of (not just owner/partner)
+      const { data: memberships } = await supabase
+        .from('space_members')
+        .select('space_id')
+        .eq('user_id', user.id)
+      const memberSpaceIds = (memberships ?? []).map((m: any) => m.space_id)
 
+      let canvasQuery = supabase
+        .from('canvases')
+        .select('id, name, owner_id, background_value, cover_url')
+
+      if (memberSpaceIds.length > 0) {
+        canvasQuery = canvasQuery.or(
+          `owner_id.eq.${user.id},partner_id.eq.${user.id},id.in.(${memberSpaceIds.join(',')})`
+        )
+      } else {
+        canvasQuery = canvasQuery.or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`)
+      }
+
+      const { data: canvases } = await canvasQuery
       if (!canvases) return
 
       const withData = await Promise.all(canvases.map(async c => {
@@ -176,7 +296,7 @@ export default function SpaceTab() {
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false) }, [])
 
   function handleCreateSpace() {
-    if (!isPlus && spaces.length >= limits.spaces) {
+    if (!isPlus && spaces.filter(s => s.owner_id === userId).length >= limits.spaces) {
       Alert.alert('Upgrade to create more', 'Free plan includes 1 space. Unlock unlimited with Anchor Plus — coming soon.', [{ text: 'OK' }])
       return
     }
@@ -186,22 +306,22 @@ export default function SpaceTab() {
   async function submitCreateSpace(name: string) {
     setShowCreatePrompt(false)
     try {
-      const { data: newCanvas } = await supabase.from('canvases')
+      const { data: newCanvas, error: canvasErr } = await supabase.from('canvases')
         .insert({ name: safeString(name).trim(), owner_id: userId, background_type: 'color', background_value: '#1A1118', theme: 'none' })
         .select('*').single()
+      if (canvasErr) { Alert.alert('Could not create space', canvasErr.message); return }
       if (newCanvas) {
-        await supabase.from('space_members').insert({ space_id: newCanvas.id, user_id: userId, role: 'owner' })
+        const { error: memberErr } = await supabase.from('space_members').insert({ space_id: newCanvas.id, user_id: userId, role: 'owner' })
+        if (memberErr) { Alert.alert('Space created but membership failed', memberErr.message) }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         load()
       }
     } catch (e: any) { Alert.alert('Error', e.message) }
   }
 
-  async function handleInvite(spaceId: string, spaceName: string) {
-    await Share.share({ message: `Join my space "${spaceName}" on Anchor 💛\nhttps://yourusername.github.io/anchor-links/space/${spaceId}` })
-  }
-
-  function enterSpace(id: string) {
+  async function enterSpace(id: string) {
+    const ok = await biometricPrompt()
+    if (!ok) return
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     setActiveSpaceId(id)
   }
@@ -212,8 +332,16 @@ export default function SpaceTab() {
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
-      <PromptModal visible={showCreatePrompt} title="New Space" message="What do you want to call this space?" placeholder="e.g. Our memories" onSubmit={submitCreateSpace} onCancel={() => setShowCreatePrompt(false)} />
-      {/* Header */}
+      <PromptModal
+        visible={showCreatePrompt}
+        title="New Space"
+        message="What do you want to call this space?"
+        placeholder="e.g. Our memories"
+        onSubmit={submitCreateSpace}
+        onCancel={() => setShowCreatePrompt(false)}
+      />
+
+      {/* ── Header ── */}
       <Animated.View style={[styles.header, {
         opacity: headerAnim,
         transform: [{ translateY: headerAnim.interpolate({ inputRange: [0, 1], outputRange: [-16, 0] }) }],
@@ -271,11 +399,14 @@ export default function SpaceTab() {
                       </View>
                     </View>
                     <View style={styles.spaceRight}>
-                      <TouchableOpacity
-                        style={[styles.inviteChip, { backgroundColor: color + '18', borderColor: color + '50' }]}
-                        onPress={e => { e.stopPropagation?.(); handleInvite(space.id, space.name) }}>
-                        <Text style={[styles.inviteChipText, { color }]}>Invite</Text>
-                      </TouchableOpacity>
+                      {/* Only the owner can invite others */}
+                      {space.owner_id === userId && (
+                        <TouchableOpacity
+                          style={[styles.inviteChip, { backgroundColor: color + '18', borderColor: color + '50' }]}
+                          onPress={e => { e.stopPropagation?.(); openInviteModal(space.id, space.name) }}>
+                          <Text style={[styles.inviteChipText, { color }]}>Invite</Text>
+                        </TouchableOpacity>
+                      )}
                       <TouchableOpacity
                         style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: C.surfaceHigh, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border }}
                         onPress={(e) => { e.stopPropagation?.(); Haptics.selectionAsync(); setSpaceMenuId(space.id) }}>
@@ -284,6 +415,8 @@ export default function SpaceTab() {
                       <Text style={styles.chevron}>›</Text>
                     </View>
                   </TouchableOpacity>
+
+                  {/* Inline context menu */}
                   {spaceMenuId === space.id && (
                     <View style={{ backgroundColor: C.surfaceHigh, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, paddingVertical: 4 }}>
                       <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
@@ -311,23 +444,6 @@ export default function SpaceTab() {
             )
           })}
 
-          {/* Locked ghost card */}
-          {spaces.length >= FREE_LIMIT && (
-            <Animated.View style={{ opacity: cardAnims[spaces.length]?.o ?? 1, transform: [{ translateY: cardAnims[spaces.length]?.y ?? new Animated.Value(0) }] }}>
-              <TouchableOpacity style={styles.lockedCard} onPress={handleCreateSpace} activeOpacity={0.7}>
-                <View style={styles.lockedInner}>
-                  <Text style={styles.lockedLock}>🔒</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.lockedTitle}>Create another space</Text>
-                    <Text style={styles.lockedSub}>Anchor Plus · Unlimited spaces</Text>
-                  </View>
-                  <Text style={styles.chevron}>›</Text>
-                </View>
-                <Text style={styles.lockedHint}>One person pays, everyone joins for free</Text>
-              </TouchableOpacity>
-            </Animated.View>
-          )}
-
           {spaces.length === 0 && (
             <View style={styles.empty}>
               <View style={styles.emptyIconWrap}><Text style={styles.emptyIcon}>✦</Text></View>
@@ -341,6 +457,60 @@ export default function SpaceTab() {
           )}
         </ScrollView>
       )}
+
+      {/* ── Friend-picker invite modal ── */}
+      <Modal
+        visible={!!inviteModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setInviteModal(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Invite to "{inviteModal?.spaceName}"</Text>
+            <Text style={styles.modalSub}>Choose a friend to give access</Text>
+
+            {inviteLoading ? (
+              <ActivityIndicator color={C.accent} style={{ marginVertical: 32 }} />
+            ) : inviteFriends.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                <Text style={{ color: C.textSecondary, fontSize: 14, textAlign: 'center' }}>
+                  No friends yet. Add friends from the Friends tab first.
+                </Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+                {inviteFriends.map(friend => (
+                  <View key={friend.id} style={styles.friendRow}>
+                    <View style={styles.friendAvatar}>
+                      <Text style={styles.friendAvatarText}>
+                        {(friend.display_name || friend.username || '?')[0].toUpperCase()}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.friendName}>{friend.display_name || friend.username}</Text>
+                      <Text style={styles.friendUsername}>@{friend.username}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.addFriendBtn, addingFriendId === friend.id && { opacity: 0.5 }]}
+                      onPress={() => addFriendToSpace(friend)}
+                      disabled={addingFriendId === friend.id}>
+                      {addingFriendId === friend.id
+                        ? <ActivityIndicator color={C.bg} size="small" />
+                        : <Text style={styles.addFriendBtnText}>Add</Text>
+                      }
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setInviteModal(null)}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   )
 }

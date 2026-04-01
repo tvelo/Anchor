@@ -972,13 +972,14 @@ export default function ScrapbookTab() {
   }
 
   async function addPage() {
-    if (!currentBook || !userId) return
+    if (!currentBook || !userId) { Alert.alert('Error', 'Not ready — please go back and reopen the scrapbook.'); return }
     if (pages.length >= limits.scrapbookPages) { Alert.alert('Page limit', `Free plan allows ${limits.scrapbookPages} pages.`); return }
     const { data, error } = await supabase.from('scrapbook_entries').insert({
       scrapbook_id: currentBook.id, bg_color: '#FFFFFF', bg_photo_url: null, bg_blur: 0, bg_dim: 0,
-      page_size: 'portrait', elements: [], border_preset: 'none', added_by: userId,
+      page_size: 'portrait', elements: JSON.stringify([]), border_preset: 'none', added_by: userId,
     }).select('*').single()
-    if (!error && data) {
+    if (error) { Alert.alert('Could not add page', error.message); return }
+    if (data) {
       const newPage = { ...data, elements: [], bg_color: '#FFFFFF' } as Page
       const newPages = [...pages, newPage]
       setPages(newPages); setCurrentPageIdx(newPages.length - 1); setShowFrontCover(false)
@@ -1028,13 +1029,14 @@ export default function ScrapbookTab() {
   }
 
   async function handleCreate() {
-    if (!newName.trim() || !userId) return
+    if (!newName.trim()) { Alert.alert('Name required', 'Give your scrapbook a name.'); return }
+    if (!userId) { Alert.alert('Error', 'Not signed in — please restart the app.'); return }
     setCreating(true)
     // Use SECURITY DEFINER RPC to avoid RLS recursion (policy cycle between
     // scrapbooks ↔ scrapbook_members). The function creates both rows atomically.
     const { data: newId, error } = await supabase.rpc('create_scrapbook', {
       p_name: newName.trim(),
-      p_canvas_id: canvasId,
+      p_canvas_id: canvasId || null,
       p_theme_color: newTheme,
     })
     const data = newId ? { id: newId, name: newName.trim(), canvas_id: canvasId, created_by: userId, theme_color: newTheme, front_cover: null, back_cover: null, bg_music_url: null, bg_music_name: null, bg_music_volume: 0.3, cover_url: null, created_at: new Date().toISOString() } as Scrapbook : null

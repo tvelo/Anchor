@@ -1,5 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import { router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -20,12 +21,18 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import ProjectChat from '../../components/ProjectChat';
+import UnlockCelebration from '../../components/UnlockCelebration';
+import { notifyMembers } from '../../lib/network';
+import { scheduleUnlockReminder } from '../../lib/notifications';
 import { supabase } from '../../lib/supabase';
+import { useAnchorPlus } from '../../lib/useAnchorPlus';
+import { useBiometricSetting } from '../../lib/useBiometricSetting';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const FREE_TRAVEL_LIMIT = 1;
+const FREE_TRAVEL_LIMIT = 0;  // travel capsules are Plus-only
 const FREE_MEMBER_LIMIT = 4;      // free members a paid creator can invite
 const PAID_MEMBER_LIMIT = 5;      // paid members a paid creator can invite (unlimited paid access)
 const FREE_MEDIA_LIMIT = 16;
@@ -369,6 +376,11 @@ function CreateCapsuleModal({
         is_paid: isPaid,
       });
 
+      // Schedule 24h-before unlock reminder
+      if (parsedDate) {
+        scheduleUnlockReminder(name.trim(), new Date(parsedDate)).catch(() => {});
+      }
+
       onCreated({ ...data, media_count: 0, member_count: 1 });
       reset();
       onClose();
@@ -592,6 +604,9 @@ function CapsuleDetailScreen({
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [displayName, setDisplayName] = useState('Someone');
+  const [unlockCelebration, setUnlockCelebration] = useState<{ name: string; mediaUrls: string[] } | null>(null);
   const isOwner = capsule.created_by === userId;
   const isLocked = capsule.visibility === 'locked' && !capsule.is_unlocked;
   const myMediaCount = media.filter(m => m.uploaded_by === userId).length;
@@ -610,6 +625,10 @@ function CapsuleDetailScreen({
   const loadData = async () => {
     setLoading(true);
     try {
+      // Fetch current user's display name for notifications
+      const { data: userProf } = await supabase.from('users').select('display_name').eq('id', userId).maybeSingle();
+      if (userProf?.display_name) setDisplayName(userProf.display_name);
+
       // Load media
       const { data: mediaData } = await supabase
         .from('travel_capsule_media')
@@ -652,6 +671,8 @@ function CapsuleDetailScreen({
       const updated = { ...capsule, is_unlocked: true };
       setCapsule(updated);
       onUpdated(updated);
+      notifyMembers({ type: 'capsule_unlock', capsule_id: capsule.id, actor_id: userId, actor_name: displayName, title: 'Capsule unlocked 🔓', body: `"${capsule.name}" is now open — see everyone's memories!` }).catch(() => {});
+      setUnlockCelebration({ name: capsule.name, mediaUrls: media.slice(0, 5).map(m => m.url) });
     }
   };
 
@@ -667,7 +688,8 @@ function CapsuleDetailScreen({
             const updated = { ...capsule, is_unlocked: true };
             setCapsule(updated);
             onUpdated(updated);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            notifyMembers({ type: 'capsule_unlock', capsule_id: capsule.id, actor_id: userId, actor_name: displayName, title: 'Capsule unlocked 🔓', body: `"${capsule.name}" is now open — see everyone's memories!` }).catch(() => {});
+            setUnlockCelebration({ name: capsule.name, mediaUrls: media.slice(0, 5).map(m => m.url) });
           }
         },
       ]
@@ -726,6 +748,7 @@ function CapsuleDetailScreen({
     setUploading(false);
     loadData();
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    notifyMembers({ type: 'capsule_media', capsule_id: capsule.id, actor_id: userId, actor_name: displayName, title: 'New memory added 📸', body: `${displayName} added to "${capsule.name}"` }).catch(() => {});
   };
 
   const handleInvite = async () => {
@@ -753,6 +776,14 @@ function CapsuleDetailScreen({
 
   return (
     <View style={styles.detailContainer}>
+      {unlockCelebration && (
+  <UnlockCelebration
+    visible={true}
+    capsuleName={unlockCelebration.name}
+    mediaUrls={unlockCelebration.mediaUrls ?? []}
+    onDismiss={() => { setUnlockCelebration(null); loadData(); }}
+  />
+)}
       {/* Header */}
       <View style={styles.detailHeader}>
         <TouchableOpacity onPress={onBack} style={styles.backBtn}>
@@ -766,6 +797,9 @@ function CapsuleDetailScreen({
         </View>
         <TouchableOpacity onPress={() => setShowMembers(true)} style={styles.membersBtn}>
           <Text style={styles.membersBtnText}>👥 {members.length}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setChatOpen(true)} style={[styles.membersBtn, { marginLeft: 8 }]}>
+          <Text style={styles.membersBtnText}>💬</Text>
         </TouchableOpacity>
       </View>
 
@@ -913,6 +947,14 @@ function CapsuleDetailScreen({
           </ScrollView>
         </View>
       </Modal>
+
+      <ProjectChat
+        visible={chatOpen}
+        onClose={() => setChatOpen(false)}
+        projectType="capsule"
+        projectId={capsule.id}
+        currentUserId={userId}
+      />
     </View>
   );
 }
@@ -923,9 +965,10 @@ export default function TripsScreen() {
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState('');
   const [canvasId, setCanvasId] = useState('');
-  const [isPaid, setIsPaid] = useState(false); // TODO: pull from user profile
+  const { isPlus: isPaid } = useAnchorPlus()
   const [showCreate, setShowCreate] = useState(false);
   const [activeCapsule, setActiveCapsule] = useState<TravelCapsule | null>(null);
+  const { prompt: biometricPrompt } = useBiometricSetting();
 
   const headerAnim = useRef(new Animated.Value(0)).current;
 
@@ -952,9 +995,20 @@ export default function TripsScreen() {
         .limit(1)
         .maybeSingle();
 
-      if (canvas) {
-        setCanvasId(canvas.id);
-        await loadCapsules(canvas.id, user.id);
+      let chosenCanvas = canvas;
+      if (!chosenCanvas) {
+        // Auto-create a default space silently
+        const { data: newCanvas } = await supabase.from('canvases')
+          .insert({ name: 'My Space', owner_id: user.id, background_type: 'color', background_value: '#1A1118', theme: 'none' })
+          .select('id').single();
+        chosenCanvas = newCanvas;
+      }
+      if (chosenCanvas?.id) {
+        setCanvasId(chosenCanvas.id);
+        await loadCapsules(chosenCanvas.id, user.id);
+      } else {
+        setCanvasId('');
+        setCapsules([]);
       }
     } catch (e) {
       console.log('[Trips] init error:', e);
@@ -1027,7 +1081,7 @@ export default function TripsScreen() {
     );
   };
 
-  const canCreate = isPaid || capsules.filter(c => c.created_by === userId).length < FREE_TRAVEL_LIMIT;
+  const canCreate = isPaid;  // travel capsules are Plus-only
 
   // ── Active capsule detail view ──
   if (activeCapsule) {
@@ -1060,14 +1114,10 @@ export default function TripsScreen() {
           style={[styles.newCapsuleBtn, !canCreate && styles.newCapsuleBtnDisabled]}
           onPress={() => {
             if (!canCreate) {
-              Alert.alert('Upgrade to Anchor Plus', 'Free accounts can create 1 travel capsule. Upgrade for unlimited.', [
+              Alert.alert('Anchor Plus Feature', 'Travel capsules are an Anchor Plus feature. Upgrade to create and share trip memories.', [
                 { text: 'Maybe later' },
-                { text: 'Learn more', onPress: () => Alert.alert('Anchor Plus', 'Coming soon!') },
+                { text: 'Learn more', onPress: () => router.push('/plus' as any) },
               ]);
-              return;
-            }
-            if (!canvasId) {
-              Alert.alert('No Space found', 'Create a Space first to start a travel capsule.');
               return;
             }
             setShowCreate(true);
@@ -1081,7 +1131,7 @@ export default function TripsScreen() {
       {!isPaid && (
         <View style={styles.limitBar}>
           <Text style={styles.limitBarText}>
-            🗺️ Free: 1 capsule · {FREE_MEDIA_LIMIT} photos/videos each · {FREE_MEMBER_LIMIT} invited members
+            ✈️ Travel capsules are an Anchor Plus feature
           </Text>
         </View>
       )}
@@ -1093,21 +1143,23 @@ export default function TripsScreen() {
       ) : capsules.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyStateEmoji}>✈️</Text>
-          <Text style={styles.emptyStateTitle}>No travel capsules yet</Text>
+          <Text style={styles.emptyStateTitle}>{isPaid ? 'No travel capsules yet' : 'Travel Capsules'}</Text>
           <Text style={styles.emptyStateDesc}>
-            Create a capsule for your next trip and invite friends to upload memories together.
+            {isPaid
+              ? 'Create a capsule for your next trip and invite friends to upload memories together.'
+              : 'Create time-locked capsules for your trips — upload memories together and reveal them at the end. Available with Anchor Plus.'}
           </Text>
           <TouchableOpacity
             style={styles.emptyStateBtn}
             onPress={() => {
-              if (!canvasId) {
-                Alert.alert('No Space found', 'Create a Space first to start a travel capsule.');
+              if (!isPaid) {
+                router.push('/plus' as any);
                 return;
               }
               setShowCreate(true);
             }}
           >
-            <Text style={styles.emptyStateBtnText}>Create Your First Capsule</Text>
+            <Text style={styles.emptyStateBtnText}>{isPaid ? 'Create Your First Capsule' : 'Unlock with Anchor Plus ✦'}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -1116,7 +1168,7 @@ export default function TripsScreen() {
             <CapsuleCard
               key={c.id}
               capsule={c}
-              onPress={() => setActiveCapsule(c)}
+              onPress={async () => { const ok = await biometricPrompt(); if (ok) setActiveCapsule(c); }}
               onLongPress={() => handleDelete(c)}
             />
           ))}

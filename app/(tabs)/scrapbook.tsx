@@ -4,26 +4,42 @@ import * as Haptics from 'expo-haptics'
 import * as ImagePicker from 'expo-image-picker'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ActivityIndicator, Alert, Dimensions, Image, KeyboardAvoidingView,
-  Modal, Platform, RefreshControl, ScrollView, Share, StyleSheet,
-  Text, TextInput, TouchableOpacity, View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import FilteredImage from '../../components/FilteredImage'
+import PhotoFilterPicker from '../../components/PhotoFilterPicker'
+import ProjectChat from '../../components/ProjectChat'
+import ScrapbookOrganizer from '../../components/ScrapbookOrganizer'
+import { notifyMembers } from '../../lib/network'
+import { notify } from '../../lib/notifications'
 import { storageUploadUrl } from '../../lib/storage'
 import { supabase } from '../../lib/supabase'
 import { useTheme } from '../../lib/ThemeContext'
-import { notify } from '../../lib/notifications'
-import { notifyMembers } from '../../lib/network'
 import { getLimits, useAnchorPlus } from '../../lib/useAnchorPlus'
+import { useBiometricSetting } from '../../lib/useBiometricSetting'
 
 const { width: SW, height: SH } = Dimensions.get('window')
-const limits_scrapbookPages = 10
-const limits_scrapbooks = 2
-
 const PAGE_W = SW - 48
 const PAGE_H = PAGE_W * (16 / 9)
+
+// ─── Free-plan caps ────────────────────────────────────────────────────────────
+const FREE_SCRAPBOOK_CAP = 3
 
 const THEME_COLORS = ['#C9956C','#B8A9D9','#EF4444','#3B82F6','#22C55E','#EAB308','#EC4899','#221A2C']
 const PAGE_COLORS = ['#FFFFFF','#FFF8F0','#FDF6E3','#F0F4FF','#F0FFF4','#FFF0F0','#F5F0FF','#FFFFF0','#E8E0D5','#1A1118']
@@ -50,6 +66,12 @@ const BORDER_PRESETS: { key: BorderPreset; label: string; emoji: string }[] = [
 
 function ff(f: string | undefined) { return f && f !== 'System' ? f : undefined }
 
+type Friend = {
+  id: string
+  display_name: string | null
+  username: string | null
+}
+
 type Scrapbook = {
   id: string; name: string; cover_url: string | null
   canvas_id: string; created_by: string; created_at: string
@@ -62,7 +84,7 @@ type PageElement = {
   id: string; type: 'photo' | 'text' | 'sticker'
   x: number; y: number; w: number; h: number
   rotation: number; zIndex: number
-  url?: string
+  url?: string; filter?: string
   text?: string; fontSize?: number; fontFamily?: string
   color?: string; bold?: boolean; italic?: boolean
   emoji?: string
@@ -75,6 +97,7 @@ type Page = {
   page_size: string; border_preset?: BorderPreset
   elements: PageElement[]
   added_by: string; created_at: string
+  sequence_index: number
 }
 
 type ScrapbookMember = { user_id: string; can_edit: boolean; display_name: string }
@@ -197,7 +220,7 @@ function DraggableElement({ el, selected, onSelect, onUpdate, onDelete, onEditTe
     .onEnd(() => { isDraggingRot.value = 0; runOnJS(onUpdate)(el.id, { rotation: rot.value }) })
   const rotIndicatorStyle = useAnimatedStyle(() => ({
     position: 'absolute' as const, bottom: 20, left: -60,
-    backgroundColor: C.surface, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
+    backgroundColor: '#221A2C', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
     borderWidth: 1, borderColor: '#B8A9D9', opacity: isDraggingRot.value ? 1 : 0, zIndex: 10000,
   }))
 
@@ -206,13 +229,13 @@ function DraggableElement({ el, selected, onSelect, onUpdate, onDelete, onEditTe
       <GestureDetector gesture={mainGesture}>
         <View style={{ width: '100%', height: '100%' }}>
           {el.type === 'photo' && el.url ? (
-            <Image source={{ uri: el.url }} style={{ width: '100%', height: '100%', borderRadius: 4 }} resizeMode="cover" />
+            <FilteredImage uri={el.url} filter={el.filter} style={{ width: '100%', height: '100%', borderRadius: 4 }} />
           ) : el.type === 'text' ? (
             <View style={{ width: '100%', height: '100%' }}>
               <Text style={{ color: el.color || '#1A1118', fontSize: el.fontSize || 16, fontFamily: ff(el.fontFamily), fontWeight: el.bold ? '700' : '400', fontStyle: el.italic ? 'italic' : 'normal', flexShrink: 1 }} numberOfLines={0}>{el.text}</Text>
             </View>
           ) : el.type === 'sticker' ? (
-            <Text style={{ fontSize: pw.value * 0.75, textAlign: 'center', lineHeight: ph.value }}>{el.emoji}</Text>
+            <Text style={{ fontSize: el.w * 0.75, textAlign: 'center', lineHeight: el.h }}>{el.emoji}</Text>
           ) : null}
           {selected && canEdit && (
             <View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { borderWidth: 1.5, borderColor: '#C9956C', borderRadius: 4, borderStyle: 'dashed' }]} />
@@ -251,6 +274,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
   const st = makeStyles(C)
   const [elements, setElements] = useState<PageElement[]>(page.elements || [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [filterMode, setFilterMode] = useState(false)
   const [toolbarVisible, setToolbarVisible] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [textModalOpen, setTextModalOpen] = useState(false)
@@ -417,12 +441,21 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
       {selectedEl && canEdit && (
         <View style={st.selBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 12, alignItems: 'center' }}>
-            <Text style={{ color: C.textSecondary, fontSize: 10, marginRight: 4 }}>{selectedEl.type === 'photo' ? '📷' : selectedEl.type === 'text' ? 'T' : '✨'}{'  drag · ⤡ resize · ↻ rotate'}</Text>
+            <Text style={{ color: '#9B8FAD', fontSize: 10, marginRight: 4 }}>{selectedEl.type === 'photo' ? '📷' : selectedEl.type === 'text' ? 'T' : '✨'}{'  drag · ⤡ resize · ↻ rotate'}</Text>
             {selectedEl.type === 'text' && <TouchableOpacity style={st.selBarBtn} onPress={() => openTextModal(selectedEl)}><Text style={st.selBarBtnText}>✏️ Edit text</Text></TouchableOpacity>}
+            {selectedEl.type === 'photo' && <TouchableOpacity style={st.selBarBtn} onPress={() => setFilterMode(f => !f)}><Text style={st.selBarBtnText}>🎨 Filter</Text></TouchableOpacity>}
             <TouchableOpacity style={st.selBarBtn} onPress={() => updateElement(selectedEl.id, { zIndex: nextZ() })}><Text style={st.selBarBtnText}>↑ Front</Text></TouchableOpacity>
             <TouchableOpacity style={[st.selBarBtn, { borderColor: '#EF4444' }]} onPress={() => deleteElement(selectedEl.id)}><Text style={[st.selBarBtnText, { color: '#EF4444' }]}>🗑</Text></TouchableOpacity>
           </ScrollView>
         </View>
+      )}
+
+      {filterMode && selectedEl?.type === 'photo' && selectedEl.url && (
+        <PhotoFilterPicker
+          imageUri={selectedEl.url}
+          selected={selectedEl.filter || 'original'}
+          onSelect={(key) => { updateElement(selectedEl.id, { filter: key === 'original' ? undefined : key }) }}
+        />
       )}
 
       {canEdit && (
@@ -439,7 +472,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
           </TouchableOpacity>
           <View style={st.floatDivider} />
           <TouchableOpacity style={st.floatBtn} onPress={() => openTextModal()}>
-            <Text style={{ fontSize: 18, fontWeight: '900', color: C.accent }}>T</Text>
+            <Text style={{ fontSize: 18, fontWeight: '900', color: '#C9956C' }}>T</Text>
             <Text style={st.floatBtnLabel}>Text</Text>
           </TouchableOpacity>
           <View style={st.floatDivider} />
@@ -455,6 +488,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
         </View>
       )}
 
+      {/* Text modal */}
       <Modal visible={textModalOpen} transparent animationType="slide" onRequestClose={() => setTextModalOpen(false)}>
         <KeyboardAvoidingView style={st.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView style={st.sheetScroll} contentContainerStyle={{ paddingBottom: 44 }} keyboardShouldPersistTaps="handled">
@@ -499,6 +533,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Sticker modal */}
       <Modal visible={stickerModalOpen} transparent animationType="slide" onRequestClose={() => setStickerModalOpen(false)}>
         <View style={st.overlay}>
           <View style={st.sheet}>
@@ -506,7 +541,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
             <Text style={st.sheetTitle}>Add sticker</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
               {STICKERS.map(s => (
-                <TouchableOpacity key={s} onPress={() => handleAddSticker(s)} style={{ padding: 8, backgroundColor: C.surfaceHigh, borderRadius: 12, borderWidth: 1, borderColor: C.border }}>
+                <TouchableOpacity key={s} onPress={() => handleAddSticker(s)} style={{ padding: 8, backgroundColor: '#2D2040', borderRadius: 12, borderWidth: 1, borderColor: '#3D2E52' }}>
                   <Text style={{ fontSize: 32 }}>{s}</Text>
                 </TouchableOpacity>
               ))}
@@ -516,6 +551,7 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
         </View>
       </Modal>
 
+      {/* BG modal */}
       <Modal visible={bgModalOpen} transparent animationType="slide" onRequestClose={() => setBgModalOpen(false)}>
         <View style={st.overlay}>
           <ScrollView style={st.sheetScroll} contentContainerStyle={{ paddingBottom: 44 }} keyboardShouldPersistTaps="handled">
@@ -578,8 +614,7 @@ function CoverEditor({ title, cover, isFront, themeColor, canvasId, onSave, onCl
   title: string; cover: any; isFront: boolean; themeColor: string
   canvasId: string; onSave: (c: any) => void; onClose: () => void
 }) {
-  const { colors: C } = useTheme()
-  const st = makeStyles(C)
+  const st = makeStyles(useTheme().colors)
   const [bgColor, setBgColor] = useState(cover?.bgColor || (isFront ? themeColor : '#1A1118'))
   const [bgPhotoUrl, setBgPhotoUrl] = useState<string | null>(cover?.bgPhotoUrl || null)
   const [text, setText] = useState(cover?.text || (isFront ? title : ''))
@@ -648,6 +683,7 @@ export default function ScrapbookTab() {
   const limits = getLimits(isPlus)
   const { colors: C } = useTheme()
   const st = makeStyles(C)
+  const { prompt: biometricPrompt } = useBiometricSetting()
   const [canvasId, setCanvasId] = useState<string | null>(null)
   const [userId, setUserId] = useState('')
   const [scrapbooks, setScrapbooks] = useState<Scrapbook[]>([])
@@ -669,9 +705,16 @@ export default function ScrapbookTab() {
   const [coverUploadingId, setCoverUploadingId] = useState<string | null>(null)
   const [membersModal, setMembersModal] = useState(false)
   const [musicModal, setMusicModal] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [organizerOpen, setOrganizerOpen] = useState(false)
 
-  // ─── expo-audio: hook must live at top level ──────────────────────────────
-  // We drive the player by changing musicUrl state — null = no player
+  // ── Scrapbook invite (friend-picker) state ────────────────────────────────
+  const [scrapbookInviteModal, setScrapbookInviteModal] = useState<{ scrapbookId: string; scrapbookName: string } | null>(null)
+  const [scrapbookInviteFriends, setScrapbookInviteFriends] = useState<Friend[]>([])
+  const [scrapbookInviteLoading, setScrapbookInviteLoading] = useState(false)
+  const [addingFriendToScrapbook, setAddingFriendToScrapbook] = useState<string | null>(null)
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
   const [musicUrl, setMusicUrl] = useState<string | null>(null)
   const [bgVolume, setBgVolume] = useState(0.3)
   const [bgPlaying, setBgPlaying] = useState(false)
@@ -679,43 +722,22 @@ export default function ScrapbookTab() {
   const [musicResults, setMusicResults] = useState<any[]>([])
   const [musicSearching, setMusicSearching] = useState(false)
 
-  // useAudioPlayer re-creates the player whenever musicUrl changes
   const musicPlayer = useAudioPlayer(musicUrl ? { uri: musicUrl } : null)
 
-  // When player or volume changes, apply settings
   useEffect(() => {
     if (!musicPlayer || !musicUrl) return
-    try {
-      musicPlayer.loop = true
-      musicPlayer.volume = bgVolume
-      musicPlayer.play()
-      setBgPlaying(true)
-    } catch {}
+    try { musicPlayer.loop = true; musicPlayer.volume = bgVolume; musicPlayer.play(); setBgPlaying(true) } catch {}
   }, [musicPlayer, musicUrl])
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      try { musicPlayer?.pause() } catch {}
-    }
+    return () => { try { musicPlayer?.pause() } catch {} }
   }, [musicPlayer])
 
-  function startMusic(url: string, vol: number) {
-    setBgVolume(vol)
-    setMusicUrl(url) // triggers useAudioPlayer to create new player
-  }
-
-  function stopMusic() {
-    try { musicPlayer?.pause() } catch {}
-    setMusicUrl(null)
-    setBgPlaying(false)
-  }
+  function startMusic(url: string, vol: number) { setBgVolume(vol); setMusicUrl(url) }
+  function stopMusic() { try { musicPlayer?.pause() } catch {}; setMusicUrl(null); setBgPlaying(false) }
 
   function togglePlay() {
-    if (!musicPlayer || !musicUrl) {
-      if (currentBook?.bg_music_url) startMusic(currentBook.bg_music_url, bgVolume)
-      return
-    }
+    if (!musicPlayer || !musicUrl) { if (currentBook?.bg_music_url) startMusic(currentBook.bg_music_url, bgVolume); return }
     try {
       if (bgPlaying) { musicPlayer.pause(); setBgPlaying(false) }
       else { musicPlayer.play(); setBgPlaying(true) }
@@ -727,8 +749,8 @@ export default function ScrapbookTab() {
     try { if (musicPlayer) musicPlayer.volume = v } catch {}
     if (currentBook) await supabase.from('scrapbooks').update({ bg_music_volume: v }).eq('id', currentBook.id)
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
+  // ── Page swipe gesture ────────────────────────────────────────────────────
   const swipeGesture = Gesture.Pan()
     .minDistance(40).maxPointers(1)
     .onEnd(e => {
@@ -759,15 +781,44 @@ export default function ScrapbookTab() {
     else { setCurrentPageIdx(i => i - 1) }
   }
 
+  // ── Load: own canvas + cross-user invited scrapbooks ─────────────────────
   async function load() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
       setUserId(user.id)
-      const { data: canvas } = await supabase.from('canvases').select('id').or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`).limit(1).maybeSingle()
-      if (!canvas) return
-      setCanvasId(canvas.id)
-      const { data: books } = await supabase.from('scrapbooks').select('*').eq('canvas_id', canvas.id).order('created_at', { ascending: false })
+
+      // Ensure the user has a canvas (for cover uploads etc.)
+      let { data: canvas } = await supabase.from('canvases').select('id')
+        .or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`).limit(1).maybeSingle()
+      if (!canvas) {
+        const { data: newCanvas } = await supabase.from('canvases')
+          .insert({ name: 'My Space', owner_id: user.id, background_type: 'color', background_value: '#1A1118', theme: 'none' })
+          .select('id').single()
+        canvas = newCanvas
+      }
+      if (canvas) setCanvasId(canvas.id)
+
+      // Fetch ALL scrapbook IDs the user is a member of (any canvas)
+      const { data: memberships } = await supabase
+        .from('scrapbook_members')
+        .select('scrapbook_id')
+        .eq('user_id', user.id)
+      const memberScrapbookIds = (memberships ?? []).map((m: any) => m.scrapbook_id)
+
+      // Build query: own canvas scrapbooks + member scrapbooks across all canvases
+      let booksQuery = supabase.from('scrapbooks').select('*')
+      if (canvas && memberScrapbookIds.length > 0) {
+        booksQuery = booksQuery.or(`canvas_id.eq.${canvas.id},id.in.(${memberScrapbookIds.join(',')})`)
+      } else if (canvas) {
+        booksQuery = booksQuery.eq('canvas_id', canvas.id)
+      } else if (memberScrapbookIds.length > 0) {
+        booksQuery = booksQuery.in('id', memberScrapbookIds)
+      } else {
+        setScrapbooks([]); setLoading(false); return
+      }
+
+      const { data: books } = await booksQuery.order('created_at', { ascending: false })
       if (books) {
         const withCounts = await Promise.all(books.map(async b => {
           const { count } = await supabase.from('scrapbook_entries').select('*', { count: 'exact', head: true }).eq('scrapbook_id', b.id)
@@ -785,9 +836,10 @@ export default function ScrapbookTab() {
   useEffect(() => { load() }, [])
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false) }, [])
 
+  // ── Load pages + determine edit permission ────────────────────────────────
   async function loadPages(bookId: string, uid: string, booksList: Scrapbook[]) {
     setPagesLoading(true)
-    const { data } = await supabase.from('scrapbook_entries').select('*').eq('scrapbook_id', bookId).order('created_at', { ascending: true })
+    const { data } = await supabase.from('scrapbook_entries').select('*').eq('scrapbook_id', bookId).order('sequence_index', { ascending: true })
     const parsed = (data || []).map(p => ({ ...p, elements: typeof p.elements === 'string' ? JSON.parse(p.elements) : (p.elements || []), bg_color: p.bg_color || '#FFFFFF' })) as Page[]
     setPages(parsed)
     const { data: mems } = await supabase.from('scrapbook_members').select('user_id, can_edit').eq('scrapbook_id', bookId)
@@ -803,7 +855,9 @@ export default function ScrapbookTab() {
     setPagesLoading(false)
   }
 
-  function openBook(book: Scrapbook) {
+  async function openBook(book: Scrapbook) {
+    const ok = await biometricPrompt()
+    if (!ok) return
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     setCurrentBook(book); setCurrentPageIdx(0); setShowFrontCover(true)
     loadPages(book.id, userId, scrapbooks)
@@ -814,6 +868,88 @@ export default function ScrapbookTab() {
     stopMusic()
     setCurrentBook(null); setPages([]); setCurrentPageIdx(0); setShowFrontCover(true)
     load()
+  }
+
+  // ── Scrapbook invite: open friend-picker ──────────────────────────────────
+  async function openScrapbookInviteModal() {
+    if (!currentBook) return
+    setScrapbookInviteModal({ scrapbookId: currentBook.id, scrapbookName: currentBook.name })
+    setScrapbookInviteLoading(true)
+    setScrapbookInviteFriends([])
+    try {
+      const { data } = await supabase
+        .from('friends')
+        .select(`
+          requester_id, addressee_id,
+          requester:requester_id(id, display_name, username),
+          addressee:addressee_id(id, display_name, username)
+        `)
+        .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
+        .eq('status', 'accepted')
+      const friends = (data ?? []).map((f: any) =>
+        f.requester_id === userId ? f.addressee : f.requester
+      ) as Friend[]
+      // Filter out people already in the scrapbook
+      const existingIds = new Set(members.map(m => m.user_id))
+      setScrapbookInviteFriends(friends.filter(f => !existingIds.has(f.id)))
+    } catch (e) { console.log('scrapbook invite load error', e) }
+    setScrapbookInviteLoading(false)
+    setMembersModal(false) // close members modal while invite modal opens
+  }
+
+  // ── Scrapbook invite: add friend with plan-cap check ──────────────────────
+  async function addFriendToScrapbook(friend: Friend) {
+    if (!scrapbookInviteModal || !currentBook) return
+    setAddingFriendToScrapbook(friend.id)
+    try {
+      // 1. Check if the invitee is on Anchor Plus
+      const { data: friendPlus } = await supabase
+        .from('anchor_plus')
+        .select('id')
+        .eq('user_id', friend.id)
+        .maybeSingle()
+
+      // 2. If free plan, count total scrapbook memberships
+      if (!friendPlus) {
+        const { count } = await supabase
+          .from('scrapbook_members')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', friend.id)
+        if ((count ?? 0) >= FREE_SCRAPBOOK_CAP) {
+          Alert.alert(
+            'Cannot invite',
+            `${friend.display_name || '@' + friend.username} is on the free plan and has already reached the ${FREE_SCRAPBOOK_CAP}-scrapbook limit. They would need Anchor Plus to join more.`
+          )
+          setAddingFriendToScrapbook(null)
+          return
+        }
+      }
+
+      // 3. Insert via SECURITY DEFINER function to avoid RLS policy cycle
+      const { error } = await supabase.rpc('add_scrapbook_member', {
+        p_scrapbook_id: scrapbookInviteModal.scrapbookId,
+        p_user_id: friend.id,
+        p_can_edit: false,
+      })
+      if (error && !error.message.includes('23505') && !error.message.toLowerCase().includes('duplicate')) {
+        throw error
+      }
+
+      // 4. Reflect locally
+      setMembers(prev => [...prev, {
+        user_id: friend.id,
+        can_edit: false,
+        display_name: friend.display_name || friend.username || 'Unknown',
+      }])
+      Alert.alert(
+        'Added ✓',
+        `${friend.display_name || '@' + friend.username} has been added to "${scrapbookInviteModal.scrapbookName}" as a viewer. Toggle can-edit from the members list.`
+      )
+      setScrapbookInviteModal(null)
+    } catch (e: any) {
+      Alert.alert('Error', e.message)
+    }
+    setAddingFriendToScrapbook(null)
   }
 
   async function handleMusicSearch() {
@@ -836,7 +972,7 @@ export default function ScrapbookTab() {
   }
 
   async function addPage() {
-    if (!currentBook || !canvasId || !userId) return
+    if (!currentBook || !userId) return
     if (pages.length >= limits.scrapbookPages) { Alert.alert('Page limit', `Free plan allows ${limits.scrapbookPages} pages.`); return }
     const { data, error } = await supabase.from('scrapbook_entries').insert({
       scrapbook_id: currentBook.id, bg_color: '#FFFFFF', bg_photo_url: null, bg_blur: 0, bg_dim: 0,
@@ -848,16 +984,15 @@ export default function ScrapbookTab() {
       setPages(newPages); setCurrentPageIdx(newPages.length - 1); setShowFrontCover(false)
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       await notify.scrapbookUpdated(currentBook.name, 'You')
-// notify other members
-const { data: userData } = await supabase.from('users').select('display_name').eq('id', userId).maybeSingle()
-await notifyMembers({
-  type: 'scrapbook_page',
-  scrapbook_id: currentBook.id,
-  actor_id: userId,
-  actor_name: userData?.display_name || 'Someone',
-  title: 'Scrapbook updated 📖',
-  body: `${userData?.display_name || 'Someone'} added a page to "${currentBook.name}"`,
-})
+      const { data: userData } = await supabase.from('users').select('display_name').eq('id', userId).maybeSingle()
+      await notifyMembers({
+        type: 'scrapbook_page',
+        scrapbook_id: currentBook.id,
+        actor_id: userId,
+        actor_name: userData?.display_name || 'Someone',
+        title: 'Scrapbook updated 📖',
+        body: `${userData?.display_name || 'Someone'} added a page to "${currentBook.name}"`,
+      })
     }
   }
 
@@ -893,27 +1028,32 @@ await notifyMembers({
   }
 
   async function handleCreate() {
-    if (!newName.trim() || !canvasId || !userId) return
-    if (scrapbooks.length >= limits.scrapbooks) { Alert.alert('Upgrade', 'Free plan includes 1 scrapbook.'); return }
+    if (!newName.trim() || !userId) return
     setCreating(true)
-    const { data, error } = await supabase.from('scrapbooks')
-      .insert({ name: newName.trim(), canvas_id: canvasId, created_by: userId, theme_color: newTheme })
-      .select('*').single()
+    // Use SECURITY DEFINER RPC to avoid RLS recursion (policy cycle between
+    // scrapbooks ↔ scrapbook_members). The function creates both rows atomically.
+    const { data: newId, error } = await supabase.rpc('create_scrapbook', {
+      p_name: newName.trim(),
+      p_canvas_id: canvasId,
+      p_theme_color: newTheme,
+    })
+    const data = newId ? { id: newId, name: newName.trim(), canvas_id: canvasId, created_by: userId, theme_color: newTheme, front_cover: null, back_cover: null, bg_music_url: null, bg_music_name: null, bg_music_volume: 0.3, cover_url: null, created_at: new Date().toISOString() } as Scrapbook : null
     if (!error && data) {
-      await supabase.from('scrapbook_members').insert({ scrapbook_id: data.id, user_id: userId, can_edit: true, invited_by: userId })
+      // member row already created inside the RPC — no second insert needed
       setScrapbooks(prev => [{ ...data, entryCount: 0 }, ...prev])
+      setNewName(''); setNewTheme('#C9956C'); setCreateModal(false)
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+    } else if (error) {
+      Alert.alert('Error', error.message)
     }
-    setNewName(''); setNewTheme('#C9956C'); setCreateModal(false); setCreating(false)
+    setCreating(false)
   }
 
   async function handleDeleteBook(id: string) {
-    Alert.alert('Delete scrapbook?', 'This permanently removes all pages. Any social posts sharing this scrapbook will also be deleted.', [
+    Alert.alert('Delete scrapbook?', 'This permanently removes all pages.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
-        // Delete social posts first (also handled by DB trigger as safety net)
         await supabase.from('social_posts').delete().eq('reference_id', id).eq('type', 'scrapbook')
-        // Delete the scrapbook (trigger fires again but that's fine — no-op)
         await supabase.from('scrapbooks').delete().eq('id', id)
         setScrapbooks(prev => prev.filter(b => b.id !== id))
         setBookMenuId(null)
@@ -921,17 +1061,11 @@ await notifyMembers({
       }},
     ])
   }
- 
 
   async function handleToggleEdit(memberId: string, current: boolean) {
     if (!currentBook) return
     await supabase.from('scrapbook_members').update({ can_edit: !current }).eq('scrapbook_id', currentBook.id).eq('user_id', memberId)
     setMembers(prev => prev.map(m => m.user_id === memberId ? { ...m, can_edit: !current } : m))
-  }
-
-  async function handleInvite() {
-    if (!currentBook) return
-    await Share.share({ message: `Join my scrapbook "${currentBook.name}" on Anchor 💛\nhttps://yourusername.github.io/anchor-links/scrapbook/${currentBook.id}` })
   }
 
   async function uploadBookCover(bookId: string) {
@@ -968,6 +1102,9 @@ await notifyMembers({
     const canGoNext = !showBack
     const canGoPrev = !showFrontCover
 
+    // Use the scrapbook's own canvas for uploads (correct even for cross-user books)
+    const uploadCanvasId = currentBook.canvas_id || canvasId || ''
+
     function goNext() {
       Haptics.selectionAsync()
       if (showFrontCover) { setShowFrontCover(false); setCurrentPageIdx(0) }
@@ -985,6 +1122,7 @@ await notifyMembers({
 
     return (
       <SafeAreaView style={st.safe}>
+        {/* ── Header ── */}
         <View style={[st.header, { borderBottomColor: currentBook.theme_color || '#2D2040' }]}>
           <TouchableOpacity onPress={goBack} style={st.backBtn}>
             <Text style={st.backText}>← Back</Text>
@@ -996,17 +1134,28 @@ await notifyMembers({
             </Text>
           </View>
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            <TouchableOpacity style={[st.iconBtn, currentBook.bg_music_url && { borderColor: '#C9956C' }]} onPress={() => setMusicModal(true)}>
+            <TouchableOpacity style={[st.iconBtn, currentBook.bg_music_url && { borderColor: '#C9956C' }]} onPress={() => {
+              if (!limits.music && !currentBook.bg_music_url) {
+                Alert.alert('Anchor Plus', 'Background music is an Anchor Plus feature.', [{ text: 'OK' }]); return
+              }
+              setMusicModal(true)
+            }}>
               <Text style={{ fontSize: 13 }}>{bgPlaying ? '🎵' : '🎧'}</Text>
             </TouchableOpacity>
-            {isOwner && (
-              <TouchableOpacity style={st.iconBtn} onPress={() => setMembersModal(true)}>
-                <Text style={{ fontSize: 13 }}>👥</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={st.iconBtn} onPress={() => setChatOpen(true)}>
+              <Text style={{ fontSize: 13 }}>💬</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={st.iconBtn} onPress={() => setOrganizerOpen(true)}>
+              <Text style={{ fontSize: 13 }}>⊞</Text>
+            </TouchableOpacity>
+            {/* Members / invite button — always visible inside a book */}
+            <TouchableOpacity style={st.iconBtn} onPress={() => setMembersModal(true)}>
+              <Text style={{ fontSize: 13 }}>👥</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
+        {/* ── Page reader ── */}
         <GestureHandlerRootView style={{ flex: 1 }}>
           <GestureDetector gesture={swipeGesture}>
             <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#D4C9B8' }}>
@@ -1039,7 +1188,8 @@ await notifyMembers({
                     </TouchableOpacity>
                   </ScrollView>
                 ) : pages[currentPageIdx] ? (
-                  <PageCanvas key={pages[currentPageIdx].id} page={pages[currentPageIdx]} canEdit={canEdit} onSave={savePage} canvasId={canvasId!} />
+                  // ⬇ Pass the scrapbook's own canvas_id so uploads go to the right bucket folder
+                  <PageCanvas key={pages[currentPageIdx].id} page={pages[currentPageIdx]} canEdit={canEdit} onSave={savePage} canvasId={uploadCanvasId} />
                 ) : (
                   <View style={[st.center, { backgroundColor: '#D4C9B8' }]}>
                     <Text style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>No pages yet</Text>
@@ -1055,6 +1205,7 @@ await notifyMembers({
           </GestureDetector>
         </GestureHandlerRootView>
 
+        {/* ── Bottom action bar ── */}
         {canEdit && (
           <View style={st.bottomBar}>
             {(showFrontCover || (!showFrontCover && !showBack)) && (
@@ -1074,14 +1225,16 @@ await notifyMembers({
           </View>
         )}
 
-        {coverModal && canvasId && (
+        {/* ── Cover editor ── */}
+        {coverModal && (
           <Modal visible transparent animationType="slide">
             <CoverEditor title={currentBook.name} cover={coverModal === 'front' ? currentBook.front_cover : currentBook.back_cover}
-              isFront={coverModal === 'front'} themeColor={currentBook.theme_color || '#C9956C'} canvasId={canvasId}
+              isFront={coverModal === 'front'} themeColor={currentBook.theme_color || '#C9956C'} canvasId={uploadCanvasId}
               onSave={c => saveCover(coverModal, c)} onClose={() => setCoverModal(null)} />
           </Modal>
         )}
 
+        {/* ── Music modal ── */}
         <Modal visible={musicModal} transparent animationType="slide">
           <KeyboardAvoidingView style={st.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView style={st.sheetScroll} contentContainerStyle={{ paddingBottom: 44 }} keyboardShouldPersistTaps="handled">
@@ -1122,7 +1275,7 @@ await notifyMembers({
                     if (result.canceled || !result.assets?.[0]) return
                     const file = result.assets[0]
                     const { data: { session } } = await supabase.auth.getSession()
-                    const path = `${canvasId}/music-${Date.now()}.mp3`
+                    const path = `${uploadCanvasId}/music-${Date.now()}.mp3`
                     const fd = new FormData()
                     fd.append('file', { uri: file.uri, name: file.name || 'music.mp3', type: file.mimeType || 'audio/mpeg' } as any)
                     const res = await fetch(storageUploadUrl('canvas-images', path), { method: 'POST', headers: { Authorization: `Bearer ${session?.access_token ?? ''}`, 'x-upsert': 'true' }, body: fd })
@@ -1170,6 +1323,7 @@ await notifyMembers({
           </KeyboardAvoidingView>
         </Modal>
 
+        {/* ── Members modal ── */}
         <Modal visible={membersModal} transparent animationType="slide">
           <View style={st.overlay}>
             <View style={st.sheet}>
@@ -1180,18 +1334,82 @@ await notifyMembers({
                 <View key={m.user_id} style={[st.memberRow, { marginBottom: 12 }]}>
                   <View style={st.memberAvatar}><Text style={st.memberAvatarText}>{m.display_name.slice(0, 2).toUpperCase()}</Text></View>
                   <Text style={{ flex: 1, color: C.textPrimary, fontSize: 14 }}>{m.user_id === userId ? 'You' : m.display_name}</Text>
-                  {m.user_id !== userId && (
+                  {m.user_id !== userId && isOwner && (
                     <TouchableOpacity style={[st.permBtn, m.can_edit && { backgroundColor: '#C9956C22', borderColor: '#C9956C' }]} onPress={() => handleToggleEdit(m.user_id, m.can_edit)}>
                       <Text style={[st.permBtnText, m.can_edit && { color: C.accent }]}>{m.can_edit ? 'Can edit' : 'View only'}</Text>
                     </TouchableOpacity>
                   )}
                 </View>
               ))}
-              <TouchableOpacity style={[st.btnPri, { marginTop: 16 }]} onPress={handleInvite}><Text style={st.btnPriText}>✦ Invite someone</Text></TouchableOpacity>
+              {/* Invite via friend-picker — replaces Share.share */}
+              {isOwner && (
+                <TouchableOpacity style={[st.btnPri, { marginTop: 16 }]} onPress={openScrapbookInviteModal}>
+                  <Text style={st.btnPriText}>✦ Invite a friend</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity style={[st.btnSec, { marginTop: 10 }]} onPress={() => setMembersModal(false)}><Text style={st.btnSecText}>Close</Text></TouchableOpacity>
             </View>
           </View>
         </Modal>
+
+        {/* ── Scrapbook friend-picker invite modal ── */}
+        <Modal visible={!!scrapbookInviteModal} transparent animationType="slide" onRequestClose={() => setScrapbookInviteModal(null)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' }}>
+            <View style={[st.sheet, { maxHeight: '70%' }]}>
+              <View style={st.sheetHandle} />
+              <Text style={st.sheetTitle}>Invite to "{scrapbookInviteModal?.scrapbookName}"</Text>
+              <Text style={{ fontSize: 13, color: C.textSecondary, marginBottom: 16 }}>Choose a friend to add as viewer (you can toggle edit access in members)</Text>
+
+              {scrapbookInviteLoading ? (
+                <ActivityIndicator color={C.accent} style={{ marginVertical: 32 }} />
+              ) : scrapbookInviteFriends.length === 0 ? (
+                <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                  <Text style={{ color: C.textSecondary, fontSize: 14, textAlign: 'center' }}>
+                    No friends to invite — either all are already members, or you haven't added any friends yet.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+                  {scrapbookInviteFriends.map(friend => (
+                    <View key={friend.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderColor: C.border }}>
+                      <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: C.surfaceHigh, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: C.accent, fontSize: 16, fontWeight: '800' }}>
+                          {(friend.display_name || friend.username || '?')[0].toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: C.textPrimary, fontSize: 15, fontWeight: '600' }}>{friend.display_name || friend.username}</Text>
+                        <Text style={{ color: C.textSecondary, fontSize: 12, marginTop: 1 }}>@{friend.username}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[{ backgroundColor: C.accent, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 }, addingFriendToScrapbook === friend.id && { opacity: 0.5 }]}
+                        onPress={() => addFriendToScrapbook(friend)}
+                        disabled={addingFriendToScrapbook === friend.id}>
+                        {addingFriendToScrapbook === friend.id
+                          ? <ActivityIndicator color="#fff" size="small" />
+                          : <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Add</Text>
+                        }
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+
+              <TouchableOpacity style={[st.btnSec, { marginTop: 16, alignItems: 'center' }]} onPress={() => setScrapbookInviteModal(null)}>
+                <Text style={st.btnSecText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        <ProjectChat visible={chatOpen} onClose={() => setChatOpen(false)} projectType="scrapbook" projectId={currentBook.id} currentUserId={userId} />
+        <ScrapbookOrganizer
+          visible={organizerOpen}
+          pages={pages}
+          onClose={() => setOrganizerOpen(false)}
+          onUpdate={(updated) => setPages([...updated])}
+          onJumpToPage={(idx) => { setShowFrontCover(false); setCurrentPageIdx(idx) }}
+        />
       </SafeAreaView>
     )
   }
@@ -1204,10 +1422,7 @@ await notifyMembers({
           <Text style={st.listHeaderTitle}>Scrapbook</Text>
           <Text style={st.listHeaderSub}>{scrapbooks.length === 0 ? 'Your memory books' : `${scrapbooks.length} book${scrapbooks.length !== 1 ? 's' : ''}`}</Text>
         </View>
-        <TouchableOpacity style={st.newBtn} onPress={() => {
-          if (scrapbooks.length >= limits.scrapbooks) Alert.alert('Upgrade to Anchor Plus', `Free plan includes ${limits.scrapbooks} scrapbooks. Unlock unlimited with Anchor Plus — coming soon.`)
-          else setCreateModal(true)
-        }}>
+        <TouchableOpacity style={st.newBtn} onPress={() => setCreateModal(true)}>
           <Text style={st.newBtnText}>+ New</Text>
         </TouchableOpacity>
       </View>
@@ -1215,30 +1430,25 @@ await notifyMembers({
         <View style={st.center}><ActivityIndicator color="#C9956C" size="large" /></View>
       ) : (
         <ScrollView contentContainerStyle={st.list} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.accent} />}>
-          {scrapbooks.map((book, i) => {
+          {scrapbooks.map((book) => {
             const color = book.theme_color || C.accent
             return (
               <View key={book.id} style={[st.bookCard, { borderColor: C.border }]}>
-                {/* Colour accent bar */}
                 <View style={[st.accentBar, { backgroundColor: color }]} />
                 <TouchableOpacity style={st.bookInner} onPress={() => openBook(book)} activeOpacity={0.85}>
-                  {/* Cover thumbnail — portrait 9:16 ratio */}
                   <TouchableOpacity
                     style={[st.coverThumb, { backgroundColor: color + '30', borderColor: color + '60', borderWidth: 1.5 }]}
-                    onPress={() => { setBookMenuId(book.id); setBookMenuId(book.id) }}
+                    onPress={(e) => { e.stopPropagation?.(); setBookMenuId(book.id) }}
                     activeOpacity={0.85}>
                     {book.cover_url
                       ? <Image source={{ uri: book.cover_url }} style={{ width: '100%', height: '100%', borderRadius: 13 }} resizeMode="cover" />
                       : coverUploadingId === book.id
                         ? <ActivityIndicator color={color} />
-                        : (
-                          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+                        : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                             <Text style={{ fontSize: 26, fontWeight: '900', color }}>{book.name.slice(0, 1).toUpperCase()}</Text>
                           </View>
-                        )
                     }
                   </TouchableOpacity>
-                  {/* Info */}
                   <View style={{ flex: 1 }}>
                     <Text style={st.bookName} numberOfLines={1}>{book.name}</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
@@ -1252,9 +1462,13 @@ await notifyMembers({
                           <Text style={{ fontSize: 10, color: C.accent, fontWeight: '600' }}>Music</Text>
                         </View>
                       )}
+                      {book.created_by !== userId && (
+                        <View style={{ backgroundColor: C.surfaceHigh, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 }}>
+                          <Text style={{ fontSize: 10, color: C.textMuted }}>Shared</Text>
+                        </View>
+                      )}
                     </View>
                   </View>
-                  {/* 3-dot menu button + chevron */}
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <TouchableOpacity
                       style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: C.surfaceHigh, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border }}
@@ -1268,21 +1482,22 @@ await notifyMembers({
                 {/* Inline context menu */}
                 {bookMenuId === book.id && (
                   <View style={{ backgroundColor: C.surfaceHigh, borderTopWidth: 1, borderTopColor: C.border, paddingVertical: 4 }}>
-                    <TouchableOpacity
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
+                    <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
                       onPress={() => { uploadBookCover(book.id) }}>
                       <Text style={{ fontSize: 16 }}>🖼️</Text>
                       <Text style={{ fontSize: 14, fontWeight: '600', color: C.textPrimary }}>Set cover photo</Text>
                     </TouchableOpacity>
-                    <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginHorizontal: 16 }} />
-                    <TouchableOpacity
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
-                      onPress={() => { setBookMenuId(null); handleDeleteBook(book.id) }}>
-                      <Text style={{ fontSize: 16 }}>🗑️</Text>
-                      <Text style={{ fontSize: 14, fontWeight: '600', color: C.danger }}>Delete scrapbook</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
+                    {book.created_by === userId && (
+                      <>
+                        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: C.border, marginHorizontal: 16 }} />
+                        <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
+                          onPress={() => { setBookMenuId(null); handleDeleteBook(book.id) }}>
+                          <Text style={{ fontSize: 16 }}>🗑️</Text>
+                          <Text style={{ fontSize: 14, fontWeight: '600', color: C.danger }}>Delete scrapbook</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                    <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}
                       onPress={() => setBookMenuId(null)}>
                       <Text style={{ fontSize: 16 }}>✕</Text>
                       <Text style={{ fontSize: 14, color: C.textSecondary }}>Cancel</Text>
@@ -1292,19 +1507,7 @@ await notifyMembers({
               </View>
             )
           })}
-          {scrapbooks.length >= limits.scrapbooks && (
-            <TouchableOpacity style={st.lockedCard} activeOpacity={0.7} onPress={() => Alert.alert('Upgrade', 'Unlimited scrapbooks with Anchor Plus — coming soon.')}>
-              <View style={st.lockedInner}>
-                <Text style={{ fontSize: 28 }}>🔒</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={st.lockedTitle}>Create another scrapbook</Text>
-                  <Text style={st.lockedSub}>Anchor Plus · Unlimited scrapbooks & pages</Text>
-                </View>
-                <Text style={st.chevron}>›</Text>
-              </View>
-              <Text style={st.lockedHint}>One person pays, everyone joins for free</Text>
-            </TouchableOpacity>
-          )}
+
           {scrapbooks.length === 0 && (
             <View style={st.empty}>
               <Text style={st.emptyEmoji}>📖</Text>
@@ -1317,6 +1520,8 @@ await notifyMembers({
           )}
         </ScrollView>
       )}
+
+      {/* ── Create modal ── */}
       <Modal visible={createModal} transparent animationType="slide">
         <KeyboardAvoidingView style={st.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={st.sheet}>
@@ -1351,8 +1556,6 @@ const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.crea
   headerTitle: { flex: 1, fontSize: 18, fontWeight: '800', color: C.textPrimary, textAlign: 'center' },
   backBtn: { minWidth: 60 },
   backText: { color: C.accent, fontSize: 15 },
-  headerAction: { backgroundColor: C.accentSoft, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, minWidth: 60, alignItems: 'center' },
-  headerActionText: { color: C.accent, fontWeight: '600', fontSize: 13 },
   iconBtn: { backgroundColor: C.surfaceHigh, borderRadius: 8, width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
   list: { padding: 16, gap: 12, paddingBottom: 48 },
   listHeader: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14 },
@@ -1364,16 +1567,9 @@ const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.crea
   accentBar: { height: 4, width: '100%' },
   bookInner: { flexDirection: 'row', alignItems: 'center', padding: 16, gap: 14 },
   coverThumb: { width: 72, height: 90, borderRadius: 14, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-  coverPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   bookName: { fontSize: 17, fontWeight: '800', color: C.textPrimary, letterSpacing: -0.2 },
   bookMeta: { fontSize: 12, color: C.textSecondary },
-  holdHint: { fontSize: 10, color: C.border, marginTop: 3 },
   chevron: { fontSize: 22, color: C.textMuted, fontWeight: '200' },
-  lockedCard: { backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border, borderStyle: 'dashed', padding: 16, gap: 10 },
-  lockedInner: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  lockedTitle: { fontSize: 15, fontWeight: '600', color: C.textSecondary },
-  lockedSub: { fontSize: 12, color: C.accent, marginTop: 2 },
-  lockedHint: { fontSize: 11, color: C.textSecondary, fontStyle: 'italic', textAlign: 'center' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 },
   emptyEmoji: { fontSize: 52 },
   emptyTitle: { fontSize: 22, fontWeight: '700', color: C.textPrimary },
@@ -1420,5 +1616,4 @@ const makeStyles = (C: ReturnType<typeof useTheme>['colors']) => StyleSheet.crea
   permBtn: { backgroundColor: C.surfaceHigh, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: C.border },
   permBtnText: { fontSize: 12, color: C.textSecondary },
   musicCard: { backgroundColor: C.surfaceHigh, borderRadius: 16, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: C.border },
-  musicEmptyCard: { backgroundColor: C.surfaceHigh, borderRadius: 16, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: C.border, borderStyle: 'dashed' },
 })

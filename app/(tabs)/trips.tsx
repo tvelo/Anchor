@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, Animated, Dimensions, FlatList, Image,
   KeyboardAvoidingView, Modal, Platform, RefreshControl, ScrollView,
-  StyleSheet, Text, TextInput, TouchableOpacity, View,
+  StyleSheet, Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ProjectChat from '../../components/ProjectChat';
@@ -245,15 +245,27 @@ function MediaViewer({ media, initialIndex, visible, onClose }: {
         {/* FIX: Video container uses flex + overflow hidden to prevent blowout on web */}
         <View style={{ flex: 1, backgroundColor: '#000', position: 'relative' }}>
           {item.type === 'video' ? (
-            <Video
-              key={item.url}
-              source={{ uri: item.url }}
-              style={StyleSheet.absoluteFillObject}
-              resizeMode={ResizeMode.CONTAIN}
-              useNativeControls
-              shouldPlay={false}
-              isLooping={false}
-            />
+            Platform.OS === 'web' ? (
+              <video
+                src={item.url}
+                controls
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                }}
+              />
+            ) : (
+              <Video
+                key={item.url}
+                source={{ uri: item.url }}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode={ResizeMode.CONTAIN}
+                useNativeControls
+                shouldPlay={false}
+                isLooping={false}
+              />
+            )
           ) : (
             <ExpoImage
               source={{ uri: item.url }}
@@ -329,8 +341,8 @@ const mv = StyleSheet.create({
   typeBadgeText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   thumbStrip: { paddingHorizontal: 16, gap: 6, paddingVertical: 8 },
   thumb: {
-    width: 60, height: 60, borderRadius: 8, overflow: 'hidden',
-    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.15)',
+    width: 60, height: 60, borderRadius: 8,
+    borderWidth: 1.5, borderColor: 'rgba(9, 4, 4, 0.15)',
   },
   thumbActive: { borderColor: C.accent, borderWidth: 2.5 },
   thumbImg: { width: '100%', height: '100%' },

@@ -9,7 +9,7 @@ export default function BannedScreen({ reason }: { reason?: string }) {
       <Text style={s.sub}>
         {reason || 'Your account has been suspended. Please contact support if you believe this is a mistake.'}
       </Text>
-      <Text style={s.email}>anchorsupprtmobile@outlook.com</Text>
+      <Text style={s.email}>anchorhelpmobile@outlook.com</Text>
       <TouchableOpacity style={s.btn} onPress={() => supabase.auth.signOut()}>
         <Text style={s.btnText}>Sign out</Text>
       </TouchableOpacity>

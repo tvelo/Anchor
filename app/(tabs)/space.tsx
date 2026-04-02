@@ -132,23 +132,36 @@ export default function SpaceTab() {
     setInviteModal({ spaceId, spaceName })
     setInviteLoading(true)
     setInviteFriends([])
+
     try {
-      const { data } = await supabase
+      // Step 1: get friend relationship rows (no nested join)
+      const { data: rows } = await supabase
         .from('friends')
-        .select(`
-          requester_id, addressee_id,
-          requester:requester_id(id, display_name, username),
-          addressee:addressee_id(id, display_name, username)
-        `)
+        .select('requester_id, addressee_id')
         .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
         .eq('status', 'accepted')
-      const friends = (data ?? []).map((f: any) =>
-        f.requester_id === userId ? f.addressee : f.requester
-      ) as Friend[]
-      setInviteFriends(friends)
+
+      if (!rows?.length) {
+        setInviteFriends([])
+        setInviteLoading(false)
+        return
+      }
+
+      // Step 2: resolve the OTHER user's profile
+      const otherIds = rows.map((r: any) =>
+        r.requester_id === userId ? r.addressee_id : r.requester_id
+      )
+
+      const { data: profiles } = await supabase
+        .from('users')
+        .select('id, display_name, username')
+        .in('id', otherIds)
+
+      setInviteFriends((profiles ?? []) as Friend[])
     } catch (e) {
       console.log('invite load error', e)
     }
+
     setInviteLoading(false)
   }
 
@@ -227,12 +240,14 @@ export default function SpaceTab() {
   async function handleDeleteSpace(spaceId: string, spaceName: string) {
     Alert.alert('Delete space?', `"${spaceName}" and all its content will be permanently deleted.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        await supabase.from('canvases').delete().eq('id', spaceId)
-        setSpaces(prev => prev.filter(s => s.id !== spaceId))
-        setSpaceMenuId(null)
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
-      }},
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          await supabase.from('canvases').delete().eq('id', spaceId)
+          setSpaces(prev => prev.filter(s => s.id !== spaceId))
+          setSpaceMenuId(null)
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+        }
+      },
     ])
   }
 
@@ -293,6 +308,103 @@ export default function SpaceTab() {
     })
   }, [])
 
+  // Realtime: instant updates for spaces list — no restart needed
+  useEffect(() => {
+    if (!userId) return
+    const channel = supabase
+      .channel(`spaces-list-${userId}`)
+      // Added to a new space → reload
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'space_members', filter: `user_id=eq.${userId}` },
+        () => load())
+      // Removed from a space → reload
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'space_members', filter: `user_id=eq.${userId}` },
+        () => load())
+      // Space name/background changed → patch in-place
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'canvases' },
+        (payload) => {
+          setSpaces(prev => prev.map(s =>
+            s.id === payload.new.id ? { ...s, name: payload.new.name ?? s.name } : s
+          ))
+        })
+      // Space deleted → remove from list
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'canvases' },
+        (payload) => setSpaces(prev => prev.filter(s => s.id !== (payload.old as any).id)))
+      // Widget added → update last activity
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'canvas_widgets' },
+        (payload) => {
+          setSpaces(prev => prev.map(s =>
+            s.id === payload.new.canvas_id ? { ...s, lastActivity: payload.new.created_at } : s
+          ))
+        })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
+
+
+
+  // (paste this into SpaceTab in spaces.tsx, NOT into SpaceCanvas.tsx)
+  useEffect(() => {
+    if (!userId) return
+
+    const channel = supabase
+      .channel(`spaces-list-realtime-${userId}`)
+
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'space_members',
+        filter: `user_id=eq.${userId}`,
+      }, () => load())
+
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'space_members',
+        filter: `user_id=eq.${userId}`,
+      }, () => load())
+
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'canvases',
+      }, (payload: any) => {
+        setSpaces((prev: Space[]) =>
+          prev.map((s: Space) =>
+            s.id === payload.new.id
+              ? { ...s, name: payload.new.name ?? s.name }
+              : s
+          )
+        )
+      })
+
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'canvases',
+      }, (payload: any) => {
+        setSpaces((prev: Space[]) => prev.filter((s: Space) => s.id !== payload.old.id))
+      })
+
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'canvas_widgets',
+      }, (payload: any) => {
+        setSpaces((prev: Space[]) =>
+          prev.map((s: Space) =>
+            s.id === payload.new.canvas_id
+              ? { ...s, lastActivity: payload.new.created_at }
+              : s
+          )
+        )
+      })
+
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [userId])
+  // ── end of block to insert in SpaceTab ──
+
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false) }, [])
 
   function handleCreateSpace() {
@@ -302,6 +414,7 @@ export default function SpaceTab() {
     }
     setShowCreatePrompt(true)
   }
+
 
   async function submitCreateSpace(name: string) {
     setShowCreatePrompt(false)
@@ -390,11 +503,11 @@ export default function SpaceTab() {
                         <Text style={styles.spaceMetaText}>👥 {space.memberCount} {space.memberCount === 1 ? 'person' : 'people'}</Text>
                         {space.lastActivity && (
                           <><Text style={styles.spaceDot}>·</Text>
-                          <Text style={styles.spaceMetaText}>{timeAgo(space.lastActivity)}</Text></>
+                            <Text style={styles.spaceMetaText}>{timeAgo(space.lastActivity)}</Text></>
                         )}
                         {space.owner_id === userId && (
                           <><Text style={styles.spaceDot}>·</Text>
-                          <Text style={[styles.spaceMetaText, { color }]}>Owner</Text></>
+                            <Text style={[styles.spaceMetaText, { color }]}>Owner</Text></>
                         )}
                       </View>
                     </View>

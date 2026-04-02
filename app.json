@@ -10,10 +10,16 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.yourname.anchormobilev2"
+      "bundleIdentifier": "com.elisha.anchor",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Allow Anchor to use Face ID to unlock your private spaces."
+      },
+      "entitlements": {
+        "aps-environment": null
+      }
     },
     "android": {
-      "package": "com.yourname.anchormobilev2",
+      "package": "com.elisha.anchor",
       "adaptiveIcon": {
         "backgroundColor": "#1A1118",
         "dark": {

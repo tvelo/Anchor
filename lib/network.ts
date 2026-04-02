@@ -94,9 +94,10 @@ export async function safeQuery<T>(
 
 // Send a push notification to other members via Edge Function
 export async function notifyMembers(payload: {
-  type: 'capsule_media' | 'capsule_unlock' | 'scrapbook_page' | 'new_member'
+  type: 'capsule_media' | 'capsule_unlock' | 'scrapbook_page' | 'new_member' | 'social_like' | 'social_comment' | 'social_follow' | 'space_join' | 'new_message'
   capsule_id?: string
   scrapbook_id?: string
+  target_user_id?: string
   actor_id: string
   actor_name: string
   title: string

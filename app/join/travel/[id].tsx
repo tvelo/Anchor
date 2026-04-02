@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
+import { notifyMembers } from '../../../lib/network'
 import { supabase } from '../../../lib/supabase'
 
 export default function JoinTrip() {
@@ -53,6 +54,10 @@ export default function JoinTrip() {
           setMessage('Failed to join. Please try again.')
           return
         }
+
+        // Notify capsule members
+        const { data: prof } = await supabase.from('social_profiles').select('display_name').eq('id', user.id).maybeSingle()
+        notifyMembers({ type: 'new_member', capsule_id: id!, actor_id: user.id, actor_name: prof?.display_name ?? 'Someone', title: 'New traveller joined ✈️', body: `${prof?.display_name ?? 'Someone'} joined "${capsule.name}"` }).catch(() => {})
       }
 
       setStatus('done')

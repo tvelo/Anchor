@@ -64,6 +64,7 @@ export type PageElement = {
   rotation: number
   zIndex: number
   url?: string
+  filter?: string
   text?: string
   fontSize?: number
   fontFamily?: string

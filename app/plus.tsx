@@ -2,8 +2,8 @@ import * as Haptics from 'expo-haptics'
 import { router } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import {
-    ActivityIndicator, Alert, Animated, Platform,
-    ScrollView, StyleSheet, Text, TouchableOpacity, View,
+  ActivityIndicator, Alert, Animated, Platform,
+  ScrollView, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native'
 import { useTheme } from '../lib/ThemeContext'
 import { supabase } from '../lib/supabase'
@@ -21,12 +21,12 @@ try {
 }
 
 const PLUS_FEATURES = [
-  { emoji: '📖', title: 'Unlimited scrapbooks',    sub: 'Create as many memory books as you want' },
-  { emoji: '✈️', title: 'Unlimited travel capsules', sub: 'No cap on trips or members' },
-  { emoji: '🖼️', title: 'More uploads per capsule', sub: 'Up to 50 photos & videos per trip' },
-  { emoji: '❤️', title: 'Unlimited spaces',         sub: 'Share canvases with more people' },
-  { emoji: '🎵', title: 'Background music',          sub: 'Add soundtracks to any scrapbook' },
-  { emoji: '✦',  title: 'Early access',              sub: 'Get new features before anyone else' },
+  { emoji: '📖', title: 'Unlimited pages',           sub: 'Go beyond the 10-page limit for your scrapbooks' },
+  { emoji: '✈️', title: 'Travel Capsules',         sub: 'Unlock shared memory capsules for all your trips' },
+  { emoji: '⚡', title: '1-min widget refresh',    sub: 'Get nearly instant updates on your home screen' },
+  { emoji: '❤️', title: 'More space members',      sub: 'Invite more friends to build your canvases' },
+  { emoji: '🎵', title: 'Background music',         sub: 'Add soundtracks to any scrapbook theme' },
+  { emoji: '📦', title: 'Unlimited Cloud storage',  sub: 'Go beyond the 500MB free storage limit' },
 ]
 
 export default function AnchorPlusScreen() {
@@ -67,7 +67,7 @@ export default function AnchorPlusScreen() {
     if (!Purchases) {
       Alert.alert(
         'Payment coming soon',
-        'In-app purchase is being set up. To get Anchor Plus during beta, contact anchorsupprtmobile@outlook.com.',
+        'In-app purchase is being set up. To get Anchor Plus during beta, contact anchorhelpmobile@outlook.com.',
         [{ text: 'Email us', onPress: () => {} }, { text: 'OK' }]
       )
       return
@@ -213,7 +213,7 @@ export default function AnchorPlusScreen() {
               </TouchableOpacity>
 
               <Text style={[s.legal, { color: C.textMuted }]}>
-                Payment processed securely via {Platform.OS === 'ios' ? 'Apple' : 'Google'}. One-time purchase — no recurring charges. Contact anchorsupprtmobile@outlook.com for support.
+                Payment processed securely via {Platform.OS === 'ios' ? 'Apple' : 'Google'}. One-time purchase — no recurring charges. Contact anchorhelpmobile@outlook.com for support.
               </Text>
             </>
           )}

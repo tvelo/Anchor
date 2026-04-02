@@ -60,23 +60,32 @@ export async function checkIsPlus(): Promise<boolean> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Free vs Plus limits — single source of truth for the whole app
+//
+// Model: Free = unlimited spaces/scrapbooks but feature-gated.
+//        Plus = everything unlocked.
 // ─────────────────────────────────────────────────────────────────────────────
 export const LIMITS = {
   free: {
-    scrapbooks: 2,
+    spaces: Infinity,
+    scrapbooks: Infinity,
     scrapbookPages: 10,
-    capsules: 1,
-    capsuleMembers: 4,
-    capsuleMedia: 16,
-    spaces: 1,
+    capsules: 0,               // travel capsules are Plus-only
+    capsuleMembers: 0,
+    capsuleMedia: 0,
+    storageMB: 500,
+    music: false,              // background music is Plus-only
+    widgetRefreshMin: 5,       // home widget refresh interval (minutes)
   },
   plus: {
+    spaces: Infinity,
     scrapbooks: Infinity,
     scrapbookPages: Infinity,
     capsules: Infinity,
     capsuleMembers: Infinity,
     capsuleMedia: 50,
-    spaces: Infinity,
+    storageMB: Infinity,
+    music: true,
+    widgetRefreshMin: 1,
   },
 }
 

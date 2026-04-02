@@ -1,0 +1,4 @@
+env: load .env
+env: export EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_ANON_KEY
+› Skipping dev server
+CommandError: No device UDID or name matching "elisha’s iphone (18.5)"

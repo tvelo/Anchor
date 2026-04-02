@@ -1,16 +1,16 @@
-import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Alert, Animated, Dimensions, Linking, Modal, Platform,
+  ActivityIndicator, Alert, Animated, Dimensions, Linking, Modal, Platform,
   ScrollView, Share, StyleSheet, Switch, Text, TextInput,
   TouchableOpacity, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '../../lib/ThemeContext';
 import { supabase } from '../../lib/supabase';
+import { useBiometricSetting } from '../../lib/useBiometricSetting';
 
 const { width: SW } = Dimensions.get('window');
 
@@ -20,7 +20,6 @@ const PRIVACY_OPTIONS: { key: 'public' | 'followers' | 'friends'; label: string;
   { key: 'friends',   label: 'Friends',   desc: 'Only mutual follows see your posts',     emoji: '🔒' },
 ];
 
-// ─── Password rules (same as signup) ─────────────────────────────────────────
 const RULES = [
   { key: 'length', label: 'At least 8 characters',     test: (p: string) => p.length >= 8 },
   { key: 'upper',  label: 'One uppercase letter (A–Z)', test: (p: string) => /[A-Z]/.test(p) },
@@ -89,16 +88,11 @@ function ChangePasswordModal({ visible, userEmail, onClose, C }: {
 
   const handleSave = async () => {
     if (!current || !next || !confirm) { Alert.alert('Fill in all fields'); return; }
-    if (score < 4) {
-      Alert.alert('Password too weak', 'Must have 8+ chars, uppercase, lowercase, and a number.');
-      return;
-    }
+    if (score < 4) { Alert.alert('Password too weak', 'Must have 8+ chars, uppercase, lowercase, and a number.'); return; }
     if (next !== confirm) { Alert.alert('Passwords don\'t match'); return; }
     setSaving(true);
-    // Re-authenticate first
     const { error: signInErr } = await supabase.auth.signInWithPassword({ email: userEmail, password: current });
     if (signInErr) { Alert.alert('Incorrect current password', signInErr.message); setSaving(false); return; }
-    // Update
     const { error } = await supabase.auth.updateUser({ password: next });
     setSaving(false);
     if (error) { Alert.alert('Failed to update password', error.message); return; }
@@ -183,7 +177,6 @@ function ChangePasswordModal({ visible, userEmail, onClose, C }: {
             <Text style={styles.primaryBtnText}>{saving ? 'Updating…' : 'Update password'}</Text>
           </TouchableOpacity>
 
-          {/* Forgot password alternative */}
           <TouchableOpacity style={{ alignItems: 'center', marginTop: 16 }} onPress={async () => {
             const { error } = await supabase.auth.resetPasswordForEmail(userEmail);
             if (error) Alert.alert('Error', error.message);
@@ -203,9 +196,13 @@ export default function SettingsScreen() {
 
   const [user, setUser] = useState<{ email: string; id: string } | null>(null);
   const [displayName, setDisplayName] = useState('');
+  const [username, setUsername] = useState('');
   const [editNameModal, setEditNameModal] = useState(false);
   const [changePasswordModal, setChangePasswordModal] = useState(false);
   const [nameInput, setNameInput] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
+  const [checkingUsername, setCheckingUsername] = useState(false);
   const [saving, setSaving] = useState(false);
   const [isPlusMember, setIsPlusMember] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -214,13 +211,15 @@ export default function SettingsScreen() {
   const [privacySaving, setPrivacySaving] = useState(false);
   const [hasProfile, setHasProfile] = useState(false);
 
-  const [notifNewMemory,      setNotifNewMemory]      = useState(true);
+  const [notifNewMemory,       setNotifNewMemory]       = useState(true);
   const [notifCapsuleUnlocked, setNotifCapsuleUnlocked] = useState(true);
-  const [notifNewMember,      setNotifNewMember]      = useState(true);
-  const [notifReminders,      setNotifReminders]      = useState(false);
-  const [locationTags,        setLocationTagsState]   = useState(false);
+  const [notifNewMember,       setNotifNewMember]       = useState(true);
+  const [notifReminders,       setNotifReminders]       = useState(false);
+  const [locationTags,         setLocationTagsState]    = useState(false);
 
+  const { isEnabled: biometricEnabled, setEnabled: setBiometricEnabled, loaded: biometricLoaded } = useBiometricSetting();
   const headerAnim = useRef(new Animated.Value(0)).current;
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     loadUser();
@@ -234,18 +233,17 @@ export default function SettingsScreen() {
       setUser({ email: user.email ?? '', id: user.id });
 
       const { data } = await supabase.from('users')
-        .select('display_name, theme, location_tags_enabled')
+        .select('display_name, username, theme, location_tags_enabled')
         .eq('id', user.id).maybeSingle();
 
       if (data?.display_name) setDisplayName(data.display_name);
       else {
         const fallback = user.email?.split('@')[0] ?? 'User';
         setDisplayName(fallback);
-        // Ensure a users row exists so future edits work
-        await supabase.from('users').upsert({ id: user.id, display_name: fallback }).catch(() => {});
+        try { await supabase.from('users').upsert({ id: user.id, display_name: fallback }); } catch {}
       }
+      if (data?.username) setUsername(data.username);
       if (data?.location_tags_enabled) setLocationTagsState(data.location_tags_enabled);
-
       if (data?.theme === 'light' || data?.theme === 'dark' || data?.theme === 'system') {
         setTheme(data.theme as Theme);
       }
@@ -265,14 +263,48 @@ export default function SettingsScreen() {
     if (user) { try { await supabase.from('users').update({ theme: t }).eq('id', user.id); } catch {} }
   };
 
+  function handleUsernameInput(val: string) {
+    const clean = val.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20);
+    setUsernameInput(clean);
+    setUsernameAvailable(null);
+    if (clean.length < 3 || clean === username) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setCheckingUsername(true);
+      const { data } = await supabase.from('users').select('id').eq('username', clean).neq('id', user?.id ?? '').maybeSingle();
+      setUsernameAvailable(!data);
+      setCheckingUsername(false);
+    }, 500);
+  }
+
   const handleSaveName = async () => {
     if (!nameInput.trim() || !user) return;
     setSaving(true);
-    await supabase.from('users').upsert({ id: user.id, display_name: nameInput.trim() });
-    setDisplayName(nameInput.trim());
+    try {
+      const updates: Record<string, string> = { display_name: nameInput.trim() };
+
+      if (usernameInput && usernameInput !== username) {
+        if (usernameAvailable !== true) {
+          Alert.alert('Username unavailable', 'Pick a different username or leave it unchanged.');
+          setSaving(false);
+          return;
+        }
+        updates.username = usernameInput;
+      }
+
+      const { error: userError } = await supabase.from('users').update(updates).eq('id', user.id);
+      if (userError) { Alert.alert('Failed to save', userError.message); setSaving(false); return; }
+
+      await supabase.from('social_profiles').update({ display_name: nameInput.trim() }).eq('id', user.id);
+
+      setDisplayName(nameInput.trim());
+      if (updates.username) setUsername(updates.username);
+      setEditNameModal(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    }
     setSaving(false);
-    setEditNameModal(false);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
   const handlePrivacyChange = async (val: 'public' | 'followers' | 'friends') => {
@@ -292,32 +324,21 @@ export default function SettingsScreen() {
     setPrivacySaving(false);
   };
 
-  // ── Location tags — persists to DB ─────────────────────────────────────────
   const handleLocationTagsToggle = async (val: boolean) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setLocationTagsState(val);
-    if (user) {
-      await supabase.from('users').update({ location_tags_enabled: val }).eq('id', user.id);
-    }
+    if (user) { await supabase.from('users').update({ location_tags_enabled: val }).eq('id', user.id); }
   };
 
-  // ── Export data ────────────────────────────────────────────────────────────
   const handleExportData = async () => {
     if (!user) return;
     setExporting(true);
     Alert.alert('Exporting your data…', 'Gathering everything, this may take a moment.');
     try {
       const [
-        { data: userData },
-        { data: canvases },
-        { data: scrapbooks },
-        { data: capsules },
-        { data: socialProfile },
-        { data: socialPosts },
-        { data: likes },
-        { data: comments },
-        { data: follows },
-        { data: followers },
+        { data: userData }, { data: canvases }, { data: scrapbooks }, { data: capsules },
+        { data: socialProfile }, { data: socialPosts }, { data: likes },
+        { data: comments }, { data: follows }, { data: followers },
       ] = await Promise.all([
         supabase.from('users').select('*').eq('id', user.id).maybeSingle(),
         supabase.from('canvases').select('id, name, created_at').or(`owner_id.eq.${user.id},partner_id.eq.${user.id}`),
@@ -330,31 +351,17 @@ export default function SettingsScreen() {
         supabase.from('social_follows').select('following_id').eq('follower_id', user.id),
         supabase.from('social_follows').select('follower_id').eq('following_id', user.id),
       ]);
-
       const exportData = {
         exported_at: new Date().toISOString(),
-        account: {
-          id: user.id,
-          email: user.email,
-          display_name: userData?.display_name,
-        },
+        account: { id: user.id, email: user.email, display_name: userData?.display_name, username: userData?.username },
         social_profile: socialProfile,
-        spaces: canvases ?? [],
-        scrapbooks: scrapbooks ?? [],
-        travel_capsules: capsules ?? [],
+        spaces: canvases ?? [], scrapbooks: scrapbooks ?? [], travel_capsules: capsules ?? [],
         social: {
-          posts: socialPosts ?? [],
-          likes_given: likes ?? [],
-          comments: comments ?? [],
-          following_count: follows?.length ?? 0,
-          follower_count: followers?.length ?? 0,
+          posts: socialPosts ?? [], likes_given: likes ?? [], comments: comments ?? [],
+          following_count: follows?.length ?? 0, follower_count: followers?.length ?? 0,
         },
       };
-
-      const json = JSON.stringify(exportData, null, 2);
-      const path = FileSystem.cacheDirectory + `anchor-export-${Date.now()}.json`;
-      await FileSystem.writeAsStringAsync(path, json, { encoding: FileSystem.EncodingType.UTF8 });
-      await Share.share({ url: path, title: 'My Anchor Data Export' });
+      await Share.share({ message: JSON.stringify(exportData, null, 2), title: 'My Anchor Data Export' });
     } catch (e: any) {
       Alert.alert('Export failed', e.message || 'Something went wrong.');
     }
@@ -395,22 +402,17 @@ export default function SettingsScreen() {
     Alert.alert('Delete account?', 'This permanently deletes all your data and cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete my account', style: 'destructive', onPress: () => {
-        Alert.alert(
-          'Are you sure?',
-          'Last chance — this cannot be reversed.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Yes, delete everything', style: 'destructive', onPress: () => {
-              Alert.alert('Contact support', 'Email anchorsupprtmobile@outlook.com with the subject "Delete my account" and we\'ll action it within 24 hours.');
-            }},
-          ]
-        );
+        Alert.alert('Are you sure?', 'Last chance — this cannot be reversed.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Yes, delete everything', style: 'destructive', onPress: () => {
+            Alert.alert('Contact support', 'Email anchorhelpmobile@outlook.com with the subject "Delete my account" and we\'ll action it within 24 hours.');
+          }},
+        ]);
       }},
     ]);
   };
 
   const avatar = displayName?.[0]?.toUpperCase() ?? '?';
-
   const toggle = (val: boolean, key: string) => (
     <Switch value={val} onValueChange={v => handleNotifToggle(key, v)}
       trackColor={{ false: C.switchTrack, true: C.accentSoft }}
@@ -436,13 +438,23 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
 
         {/* Profile card */}
-        <TouchableOpacity onPress={() => { setNameInput(displayName); setEditNameModal(true); }}
-          style={[styles.profileCard, { backgroundColor: C.surface, borderColor: C.border }]} activeOpacity={0.85}>
+        <TouchableOpacity
+          onPress={() => {
+            setNameInput(displayName);
+            setUsernameInput(username);
+            setUsernameAvailable(null);
+            setEditNameModal(true);
+          }}
+          style={[styles.profileCard, { backgroundColor: C.surface, borderColor: C.border }]}
+          activeOpacity={0.85}>
           <View style={[styles.avatar, { backgroundColor: C.accentSoft, borderColor: C.accent + '60' }]}>
             <Text style={[styles.avatarText, { color: C.accent }]}>{avatar}</Text>
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.profileName, { color: C.textPrimary }]}>{displayName}</Text>
+            {username ? (
+              <Text style={[styles.profileEmail, { color: C.accent, opacity: 0.8 }]}>@{username}</Text>
+            ) : null}
             <Text style={[styles.profileEmail, { color: C.textMuted }]}>{user?.email ?? ''}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -525,10 +537,10 @@ export default function SettingsScreen() {
 
         {/* Notifications */}
         <Section title="Notifications" C={C}>
-          <SettingRow label="New memory added"    subtitle="When someone uploads to a shared capsule" right={toggle(notifNewMemory, 'newMemory')} C={C} />
-          <SettingRow label="Capsule unlocked"    subtitle="When a time-locked capsule opens"         right={toggle(notifCapsuleUnlocked, 'unlocked')} C={C} />
+          <SettingRow label="New memory added"     subtitle="When someone uploads to a shared capsule" right={toggle(notifNewMemory, 'newMemory')} C={C} />
+          <SettingRow label="Capsule unlocked"     subtitle="When a time-locked capsule opens"         right={toggle(notifCapsuleUnlocked, 'unlocked')} C={C} />
           <SettingRow label="New traveller joined" subtitle="When someone joins your capsule"          right={toggle(notifNewMember, 'newMember')} C={C} />
-          <SettingRow label="Upload reminders"    subtitle="Gentle nudges before unlock"              right={toggle(notifReminders, 'reminders')} C={C} />
+          <SettingRow label="Upload reminders"     subtitle="Gentle nudges before unlock"              right={toggle(notifReminders, 'reminders')} C={C} />
         </Section>
 
         {/* Privacy */}
@@ -537,53 +549,56 @@ export default function SettingsScreen() {
             label="Location tags"
             subtitle={locationTags ? 'Location attached to memories · tap to disable' : 'Tap to attach location to uploaded memories'}
             right={
-              <Switch
-                value={locationTags}
-                onValueChange={handleLocationTagsToggle}
+              <Switch value={locationTags} onValueChange={handleLocationTagsToggle}
                 trackColor={{ false: C.switchTrack, true: C.accentSoft }}
-                thumbColor={locationTags ? C.accent : C.textMuted}
-                ios_backgroundColor={C.switchTrack}
-              />
+                thumbColor={locationTags ? C.accent : C.textMuted} ios_backgroundColor={C.switchTrack} />
             }
             C={C}
           />
-          <SettingRow label="Privacy Policy"    onPress={() => Linking.openURL('https://anchor.app/privacy')} C={C} />
-          <SettingRow label="Terms of Service"  onPress={() => Linking.openURL('https://anchor.app/terms')} C={C} />
+          <SettingRow label="Privacy Policy"   onPress={() => Linking.openURL('https://anchor.app/privacy')} C={C} />
+          <SettingRow label="Terms of Service" onPress={() => Linking.openURL('https://anchor.app/terms')} C={C} />
         </Section>
+
+        {/* Security */}
+        {biometricLoaded && (
+          <Section title="Security" C={C}>
+            <SettingRow
+              label="Require Face ID / Touch ID"
+              subtitle="Prompt when opening Spaces, Scrapbooks, and Trips"
+              right={
+                <Switch value={biometricEnabled}
+                  onValueChange={v => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setBiometricEnabled(v); }}
+                  trackColor={{ false: C.switchTrack, true: C.accentSoft }}
+                  thumbColor={biometricEnabled ? C.accent : C.textMuted} ios_backgroundColor={C.switchTrack} />
+              }
+              C={C}
+            />
+          </Section>
+        )}
 
         {/* Account */}
         <Section title="Account" C={C}>
-          <SettingRow
-            label="Change password"
-            subtitle="Update your password securely"
-            onPress={() => setChangePasswordModal(true)}
-            C={C}
-          />
-          <SettingRow
-            label="Export my data"
-            subtitle={exporting ? 'Exporting…' : 'Download a copy of all your data'}
-            onPress={exporting ? undefined : handleExportData}
-            C={C}
-          />
+          <SettingRow label="Change password" subtitle="Update your password securely" onPress={() => setChangePasswordModal(true)} C={C} />
+          <SettingRow label="Export my data"  subtitle={exporting ? 'Exporting…' : 'Download a copy of all your data'} onPress={exporting ? undefined : handleExportData} C={C} />
         </Section>
 
         {/* Support */}
         <Section title="Support" C={C}>
-          <SettingRow label="Send feedback"    onPress={() => Linking.openURL('mailto:anchorsupprtmobile@outlook.com?subject=Feedback')} C={C} />
+          <SettingRow label="Send feedback"    onPress={() => Linking.openURL('mailto:anchorhelpmobile@outlook.com?subject=Feedback')} C={C} />
           <SettingRow label="Rate Anchor"      onPress={() => Linking.openURL('https://apps.apple.com')} C={C} />
           <SettingRow label="Share with friends" onPress={() => Share.share({ message: 'Check out Anchor — shared travel memory capsules! https://anchor.app' })} C={C} />
         </Section>
 
         {/* Danger */}
         <Section title="Danger Zone" C={C}>
-          <SettingRow label="Sign out"        onPress={handleSignOut}      danger C={C} />
-          <SettingRow label="Delete account"  subtitle="Permanently removes all your data" onPress={handleDeleteAccount} danger C={C} />
+          <SettingRow label="Sign out"       onPress={handleSignOut}       danger C={C} />
+          <SettingRow label="Delete account" subtitle="Permanently removes all your data" onPress={handleDeleteAccount} danger C={C} />
         </Section>
 
         <Text style={[styles.version, { color: C.textMuted }]}>Anchor v1.0.0 · Made with ❤️</Text>
       </ScrollView>
 
-      {/* Edit name modal */}
+      {/* Edit profile modal */}
       <Modal visible={editNameModal} animationType="slide" presentationStyle="formSheet" onRequestClose={() => setEditNameModal(false)}>
         <View style={[styles.modalContainer, { backgroundColor: C.bg }]}>
           <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
@@ -595,21 +610,62 @@ export default function SettingsScreen() {
               <Text style={[styles.modalCancel, { color: C.accent }]}>{saving ? 'Saving…' : 'Save'}</Text>
             </TouchableOpacity>
           </View>
-          <View style={{ padding: 24 }}>
+          <ScrollView contentContainerStyle={{ padding: 24 }} keyboardShouldPersistTaps="handled">
             <View style={[styles.avatarLarge, { backgroundColor: C.accentSoft, borderColor: C.accent + '60', alignSelf: 'center', marginBottom: 28 }]}>
               <Text style={[styles.avatarTextLarge, { color: C.accent }]}>{(nameInput || displayName)?.[0]?.toUpperCase() ?? '?'}</Text>
             </View>
+
+            {/* Display name */}
             <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>Display name</Text>
             <TextInput
               style={[styles.input, { backgroundColor: C.surfaceHigh, borderColor: C.border, color: C.textPrimary }]}
               value={nameInput} onChangeText={setNameInput} placeholder="Your name"
               placeholderTextColor={C.textMuted} autoFocus returnKeyType="done" onSubmitEditing={handleSaveName} />
-            <Text style={[styles.fieldLabel, { color: C.textSecondary, marginTop: 20 }]}>Email</Text>
+            <Text style={[styles.fieldHint, { color: C.textMuted, marginBottom: 16 }]}>
+              This is your visible nickname — shown everywhere in the app.
+            </Text>
+
+            {/* Username */}
+            <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>Username</Text>
+            <View style={[styles.input, {
+              backgroundColor: C.surfaceHigh, borderColor: C.border,
+              flexDirection: 'row', alignItems: 'center', marginBottom: 4,
+            }]}>
+              <Text style={{ color: C.textMuted, fontSize: 15 }}>@</Text>
+              <TextInput
+                style={{ flex: 1, color: C.textPrimary, fontSize: 15 }}
+                value={usernameInput}
+                onChangeText={handleUsernameInput}
+                placeholder={username || 'username'}
+                placeholderTextColor={C.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {checkingUsername && <ActivityIndicator color={C.accent} size="small" />}
+              {!checkingUsername && usernameInput.length >= 3 && usernameInput !== username && usernameAvailable === true && (
+                <Text style={{ color: '#5EBA8A' }}>✓</Text>
+              )}
+              {!checkingUsername && usernameInput.length >= 3 && usernameAvailable === false && (
+                <Text style={{ color: '#E05C5C' }}>✗</Text>
+              )}
+            </View>
+            {usernameInput.length > 0 && usernameInput === username && (
+              <Text style={{ color: C.textMuted, fontSize: 12, marginBottom: 8 }}>This is your current username</Text>
+            )}
+            {usernameInput.length >= 3 && usernameAvailable === false && (
+              <Text style={{ color: '#E05C5C', fontSize: 12, marginBottom: 8 }}>@{usernameInput} is already taken</Text>
+            )}
+            <Text style={[styles.fieldHint, { color: C.textMuted, marginBottom: 20 }]}>
+              Your @username is how friends find and add you.
+            </Text>
+
+            {/* Email (readonly) */}
+            <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>Email</Text>
             <View style={[styles.inputReadonly, { backgroundColor: C.surfaceHigh, borderColor: C.border }]}>
               <Text style={[styles.inputReadonlyText, { color: C.textMuted }]}>{user?.email ?? ''}</Text>
             </View>
             <Text style={[styles.fieldHint, { color: C.textMuted }]}>Email cannot be changed here.</Text>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </SafeAreaView>

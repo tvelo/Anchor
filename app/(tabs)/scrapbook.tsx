@@ -1,8 +1,8 @@
-import { useAudioPlayer } from 'expo-audio'
-import * as DocumentPicker from 'expo-document-picker'
-import * as Haptics from 'expo-haptics'
-import * as ImagePicker from 'expo-image-picker'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAudioPlayer } from 'expo-audio';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,21 +18,21 @@ import {
   TextInput,
   TouchableOpacity,
   View
-} from 'react-native'
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
-import { SafeAreaView } from 'react-native-safe-area-context'
-import FilteredImage from '../../components/FilteredImage'
-import PhotoFilterPicker from '../../components/PhotoFilterPicker'
-import ProjectChat from '../../components/ProjectChat'
-import ScrapbookOrganizer from '../../components/ScrapbookOrganizer'
-import { notifyMembers } from '../../lib/network'
-import { notify } from '../../lib/notifications'
-import { storageUploadUrl } from '../../lib/storage'
-import { supabase } from '../../lib/supabase'
-import { useTheme } from '../../lib/ThemeContext'
-import { getLimits, useAnchorPlus } from '../../lib/useAnchorPlus'
-import { useBiometricSetting } from '../../lib/useBiometricSetting'
+} from 'react-native';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import FilteredImage from '../../components/FilteredImage';
+import PhotoFilterPicker from '../../components/PhotoFilterPicker';
+import ProjectChat from '../../components/ProjectChat';
+import ScrapbookOrganizer from '../../components/ScrapbookOrganizer';
+import { notifyMembers } from '../../lib/network';
+import { notify } from '../../lib/notifications';
+import { storageUploadUrl } from '../../lib/storage';
+import { supabase } from '../../lib/supabase';
+import { useTheme } from '../../lib/ThemeContext';
+import { getLimits, useAnchorPlus } from '../../lib/useAnchorPlus';
+import { useBiometricSetting } from '../../lib/useBiometricSetting';
 
 const { width: SW, height: SH } = Dimensions.get('window')
 const PAGE_W = SW - 48
@@ -41,9 +41,9 @@ const PAGE_H = PAGE_W * (16 / 9)
 // ─── Free-plan caps ────────────────────────────────────────────────────────────
 const FREE_SCRAPBOOK_CAP = 3
 
-const THEME_COLORS = ['#C9956C','#B8A9D9','#EF4444','#3B82F6','#22C55E','#EAB308','#EC4899','#221A2C']
-const PAGE_COLORS = ['#FFFFFF','#FFF8F0','#FDF6E3','#F0F4FF','#F0FFF4','#FFF0F0','#F5F0FF','#FFFFF0','#E8E0D5','#1A1118']
-const TEXT_COLORS = ['#1A1118','#FFFFFF','#C9956C','#B8A9D9','#EF4444','#3B82F6','#22C55E','#9B8FAD']
+const THEME_COLORS = ['#C9956C', '#B8A9D9', '#EF4444', '#3B82F6', '#22C55E', '#EAB308', '#EC4899', '#221A2C']
+const PAGE_COLORS = ['#FFFFFF', '#FFF8F0', '#FDF6E3', '#F0F4FF', '#F0FFF4', '#FFF0F0', '#F5F0FF', '#FFFFF0', '#E8E0D5', '#1A1118']
+const TEXT_COLORS = ['#1A1118', '#FFFFFF', '#C9956C', '#B8A9D9', '#EF4444', '#3B82F6', '#22C55E', '#9B8FAD']
 const FONT_OPTIONS = [
   { label: 'Default', value: 'System' },
   { label: 'Serif', value: 'Georgia' },
@@ -52,7 +52,7 @@ const FONT_OPTIONS = [
   { label: 'Thin', value: 'Helvetica Neue' },
   { label: 'Bold', value: 'AvenirNext-Heavy' },
 ]
-const STICKERS = ['❤️','✨','🌸','⭐','🎀','🌙','☀️','🦋','🌺','💫','🎵','📸','✈️','🗺️','🏖️','🏔️','🌿','🍃','🎭','🎨','🦄','🍓','🌈','🎪']
+const STICKERS = ['❤️', '✨', '🌸', '⭐', '🎀', '🌙', '☀️', '🦋', '🌺', '💫', '🎵', '📸', '✈️', '🗺️', '🏖️', '🏔️', '🌿', '🍃', '🎭', '🎨', '🦄', '🍓', '🌈', '🎪']
 
 type BorderPreset = 'none' | 'floral' | 'hearts' | 'stars' | 'vintage' | 'minimal'
 const BORDER_PRESETS: { key: BorderPreset; label: string; emoji: string }[] = [
@@ -63,6 +63,7 @@ const BORDER_PRESETS: { key: BorderPreset; label: string; emoji: string }[] = [
   { key: 'vintage', label: 'Vintage', emoji: '✦' },
   { key: 'minimal', label: 'Minimal', emoji: '▪' },
 ]
+
 
 function ff(f: string | undefined) { return f && f !== 'System' ? f : undefined }
 
@@ -267,10 +268,11 @@ function DraggableElement({ el, selected, onSelect, onUpdate, onDelete, onEditTe
 }
 
 // ─── Page Canvas ──────────────────────────────────────────────────────────────
-function PageCanvas({ page, canEdit, onSave, canvasId }: {
-  page: Page; canEdit: boolean; onSave: (p: Page) => void; canvasId: string
+function PageCanvas({ page, canEdit, onSave, canvasId, remoteVersion }: {
+  page: Page; canEdit: boolean; onSave: (p: Page) => void; canvasId: string; remoteVersion: number
 }) {
   const { colors: C } = useTheme()
+  const hasLocalEditsRef = useRef(false)   // ← moved here from module level
   const st = makeStyles(C)
   const [elements, setElements] = useState<PageElement[]>(page.elements || [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -302,10 +304,24 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
     setBgDim(page.bg_dim || 0)
     setBorderPreset((page.border_preset as BorderPreset) || 'none')
     setSelectedId(null)
+    hasLocalEditsRef.current = false
   }, [page.id])
+
+  // Sync remote updates from another user WITHOUT overwriting local edits in progress
+  useEffect(() => {
+    if (remoteVersion > 0 && !hasLocalEditsRef.current) {
+      setElements(page.elements || [])
+      setBgColor(page.bg_color || '#FFFFFF')
+      setBgPhotoUrl(page.bg_photo_url || null)
+      setBgBlur(page.bg_blur || 0)
+      setBgDim(page.bg_dim || 0)
+      setBorderPreset((page.border_preset as BorderPreset) || 'none')
+    }
+  }, [remoteVersion])
 
   function nextZ() { return elements.reduce((m, e) => Math.max(m, e.zIndex), 0) + 1 }
 
+  hasLocalEditsRef.current = false
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   function debouncedSave(updated: Page) {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
@@ -314,10 +330,14 @@ function PageCanvas({ page, canEdit, onSave, canvasId }: {
         bg_color: updated.bg_color, bg_photo_url: updated.bg_photo_url,
         bg_blur: updated.bg_blur, bg_dim: updated.bg_dim, page_size: updated.page_size,
         elements: JSON.stringify(updated.elements), border_preset: updated.border_preset,
+        updated_at: new Date().toISOString()
       }).eq('id', updated.id)
+      hasLocalEditsRef.current = false
     }, 600)
   }
 
+
+  hasLocalEditsRef.current = true
   function persist(els: PageElement[], overrides: Partial<Page> = {}) {
     setElements(els)
     const updated: Page = {
@@ -707,7 +727,7 @@ export default function ScrapbookTab() {
   const [musicModal, setMusicModal] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [organizerOpen, setOrganizerOpen] = useState(false)
-
+  const [remotePageVersions, setRemotePageVersions] = useState<Record<string, number>>({})
   // ── Scrapbook invite (friend-picker) state ────────────────────────────────
   const [scrapbookInviteModal, setScrapbookInviteModal] = useState<{ scrapbookId: string; scrapbookName: string } | null>(null)
   const [scrapbookInviteFriends, setScrapbookInviteFriends] = useState<Friend[]>([])
@@ -726,27 +746,27 @@ export default function ScrapbookTab() {
 
   useEffect(() => {
     if (!musicPlayer || !musicUrl) return
-    try { musicPlayer.loop = true; musicPlayer.volume = bgVolume; musicPlayer.play(); setBgPlaying(true) } catch {}
+    try { musicPlayer.loop = true; musicPlayer.volume = bgVolume; musicPlayer.play(); setBgPlaying(true) } catch { }
   }, [musicPlayer, musicUrl])
 
   useEffect(() => {
-    return () => { try { musicPlayer?.pause() } catch {} }
+    return () => { try { musicPlayer?.pause() } catch { } }
   }, [musicPlayer])
 
   function startMusic(url: string, vol: number) { setBgVolume(vol); setMusicUrl(url) }
-  function stopMusic() { try { musicPlayer?.pause() } catch {}; setMusicUrl(null); setBgPlaying(false) }
+  function stopMusic() { try { musicPlayer?.pause() } catch { }; setMusicUrl(null); setBgPlaying(false) }
 
   function togglePlay() {
     if (!musicPlayer || !musicUrl) { if (currentBook?.bg_music_url) startMusic(currentBook.bg_music_url, bgVolume); return }
     try {
       if (bgPlaying) { musicPlayer.pause(); setBgPlaying(false) }
       else { musicPlayer.play(); setBgPlaying(true) }
-    } catch {}
+    } catch { }
   }
 
   async function handleVolumeChange(v: number) {
     setBgVolume(v)
-    try { if (musicPlayer) musicPlayer.volume = v } catch {}
+    try { if (musicPlayer) musicPlayer.volume = v } catch { }
     if (currentBook) await supabase.from('scrapbooks').update({ bg_music_volume: v }).eq('id', currentBook.id)
   }
 
@@ -834,6 +854,189 @@ export default function ScrapbookTab() {
   }
 
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!userId) return
+
+    const channel = supabase
+      .channel(`scrapbook-list-realtime-${userId}`)
+
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'scrapbook_members',
+        filter: `user_id=eq.${userId}`,
+      }, () => load())
+
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'scrapbook_members',
+        filter: `user_id=eq.${userId}`,
+      }, (payload: any) => {
+        setMembers((prev: ScrapbookMember[]) =>
+          prev.map((m: ScrapbookMember) =>
+            m.user_id === payload.new.user_id
+              ? { ...m, can_edit: payload.new.can_edit }
+              : m
+          )
+        )
+        if (currentBook) {
+          const updated = payload.new
+          if (updated.scrapbook_id === currentBook.id && updated.user_id === userId) {
+            setCanEdit(currentBook.created_by === userId || !!updated.can_edit)
+          }
+        }
+      })
+
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'scrapbook_members',
+        filter: `user_id=eq.${userId}`,
+      }, () => load())
+
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'scrapbook_entries',
+      }, (payload: any) => {
+        setScrapbooks((prev: Scrapbook[]) =>
+          prev.map((b: Scrapbook) =>
+            b.id === payload.new.scrapbook_id
+              ? { ...b, entryCount: (b.entryCount ?? 0) + 1 }
+              : b
+          )
+        )
+        if (currentBook?.id === payload.new.scrapbook_id) {
+          const newPage = {
+            ...payload.new,
+            elements: typeof payload.new.elements === 'string'
+              ? JSON.parse(payload.new.elements)
+              : (payload.new.elements || []),
+            bg_color: payload.new.bg_color || '#FFFFFF',
+          }
+          setPages((prev: Page[]) => {
+            if (prev.find((p: Page) => p.id === newPage.id)) return prev
+            return [...prev, newPage]
+          })
+        }
+      })
+
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'scrapbook_entries',
+      }, (payload: any) => {
+        if (currentBook?.id === payload.new.scrapbook_id) {
+          setPages((prev: Page[]) =>
+            prev.map((p: Page) =>
+              p.id === payload.new.id
+                ? {
+                  ...p,
+                  ...payload.new,
+                  elements: typeof payload.new.elements === 'string'
+                    ? JSON.parse(payload.new.elements)
+                    : (payload.new.elements || []),
+                }
+                : p
+            )
+          )
+        }
+      })
+
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'scrapbooks',
+      }, (payload: any) => {
+        setScrapbooks((prev: Scrapbook[]) => prev.filter((b: Scrapbook) => b.id !== payload.old.id))
+        if (currentBook?.id === payload.old.id) {
+          setCurrentBook(null)
+          setPages([])
+        }
+      })
+
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [userId, currentBook?.id])
+  // ── end of block to insert in ScrapbookTab ──
+  useEffect(() => {
+    if (!userId) return
+    const channel = supabase
+      .channel(`scrapbook-list-${userId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'scrapbook_members', filter: `user_id=eq.${userId}` },
+        () => load())
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scrapbook_members', filter: `user_id=eq.${userId}` },
+        () => load())
+      // Your own can_edit permission was changed → update canEdit live
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'scrapbook_members', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          // Update the members list if a book is open
+          setMembers((prev: ScrapbookMember[]) =>
+            prev.map(m => m.user_id === payload.new.user_id
+              ? { ...m, can_edit: payload.new.can_edit } : m))
+          // Update canEdit flag for currently open book
+          if (currentBook && currentBook.id === payload.new.scrapbook_id && payload.new.user_id === userId) {
+            setCanEdit(currentBook.created_by === userId || !!payload.new.can_edit)
+          }
+        })
+      // New page added (by anyone) → update page count in list + add to open book
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'scrapbook_entries' },
+        (payload) => {
+          setScrapbooks(prev => prev.map(b =>
+            b.id === payload.new.scrapbook_id
+              ? { ...b, entryCount: (b.entryCount ?? 0) + 1 } : b
+          ))
+          if (currentBook?.id === payload.new.scrapbook_id) {
+            const newPage = {
+              ...payload.new,
+              elements: typeof payload.new.elements === 'string'
+                ? JSON.parse(payload.new.elements) : (payload.new.elements || []),
+              bg_color: payload.new.bg_color || '#FFFFFF',
+            }
+            setPages(prev => prev.map(p =>
+              p.id === payload.new.id
+                ? {
+                  ...p,
+                  ...payload.new,
+                  elements: typeof payload.new.elements === 'string'
+                    ? JSON.parse(payload.new.elements)
+                    : (payload.new.elements || []),
+                  bg_color: payload.new.bg_color || p.bg_color,
+                } as Page          // ← add "as Page" cast here
+                : p
+            ))
+          }
+        })
+      // Page content changed by another user → update in open book
+      // (uses remotePageVersions to signal PageCanvas to sync its internal state)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'scrapbook_entries' },
+        (payload) => {
+          if (currentBook?.id === payload.new.scrapbook_id) {
+            setPages(prev => prev.map(p =>
+              p.id === payload.new.id
+                ? {
+                  ...p, ...payload.new,
+                  elements: typeof payload.new.elements === 'string'
+                    ? JSON.parse(payload.new.elements) : (payload.new.elements || []),
+                }
+                : p
+            ))
+            // Bump version so PageCanvas knows a remote update arrived
+            setRemotePageVersions((prev: Record<string, number>) => ({ ...prev, [payload.new.id]: (prev[payload.new.id] ?? 0) + 1 }))
+          }
+        })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'scrapbooks' },
+        (payload) => {
+          setScrapbooks(prev => prev.filter(b => b.id !== (payload.old as any).id))
+          if (currentBook?.id === (payload.old as any).id) { setCurrentBook(null); setPages([]) }
+        })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [userId, currentBook?.id])
+
+
   const onRefresh = useCallback(async () => { setRefreshing(true); await load(); setRefreshing(false) }, [])
 
   // ── Load pages + determine edit permission ────────────────────────────────
@@ -873,28 +1076,45 @@ export default function ScrapbookTab() {
   // ── Scrapbook invite: open friend-picker ──────────────────────────────────
   async function openScrapbookInviteModal() {
     if (!currentBook) return
+    // Close members modal FIRST, before any async work
+    setMembersModal(false)
     setScrapbookInviteModal({ scrapbookId: currentBook.id, scrapbookName: currentBook.name })
     setScrapbookInviteLoading(true)
     setScrapbookInviteFriends([])
     try {
-      const { data } = await supabase
+      // Two-step query — avoids PostgREST nested join which can freeze
+      const { data: rows } = await supabase
         .from('friends')
-        .select(`
-          requester_id, addressee_id,
-          requester:requester_id(id, display_name, username),
-          addressee:addressee_id(id, display_name, username)
-        `)
+        .select('requester_id, addressee_id')
         .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`)
         .eq('status', 'accepted')
-      const friends = (data ?? []).map((f: any) =>
-        f.requester_id === userId ? f.addressee : f.requester
-      ) as Friend[]
+
+      if (!rows?.length) {
+        setScrapbookInviteFriends([])
+        setScrapbookInviteLoading(false)
+        return
+      }
+
+      const otherIds = rows.map((r: any) =>
+        r.requester_id === userId ? r.addressee_id : r.requester_id
+      )
+
+      const { data: profiles } = await supabase
+        .from('users')
+        .select('id, display_name, username')
+        .in('id', otherIds)
+
       // Filter out people already in the scrapbook
       const existingIds = new Set(members.map(m => m.user_id))
-      setScrapbookInviteFriends(friends.filter(f => !existingIds.has(f.id)))
-    } catch (e) { console.log('scrapbook invite load error', e) }
-    setScrapbookInviteLoading(false)
-    setMembersModal(false) // close members modal while invite modal opens
+      setScrapbookInviteFriends(
+        ((profiles ?? []) as Friend[]).filter(f => !existingIds.has(f.id))
+      )
+    } catch (e) {
+      console.log('scrapbook invite load error', e)
+      Alert.alert('Error', 'Could not load friends. Please try again.')
+    } finally {
+      setScrapbookInviteLoading(false)
+    }
   }
 
   // ── Scrapbook invite: add friend with plan-cap check ──────────────────────
@@ -1000,14 +1220,16 @@ export default function ScrapbookTab() {
   async function deletePage(id: string) {
     Alert.alert('Delete page?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        await supabase.from('scrapbook_entries').delete().eq('id', id)
-        const newPages = pages.filter(p => p.id !== id)
-        setPages(newPages)
-        setCurrentPageIdx(Math.max(0, currentPageIdx - 1))
-        if (newPages.length === 0) setShowFrontCover(true)
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)
-      }}
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          await supabase.from('scrapbook_entries').delete().eq('id', id)
+          const newPages = pages.filter(p => p.id !== id)
+          setPages(newPages)
+          setCurrentPageIdx(Math.max(0, currentPageIdx - 1))
+          if (newPages.length === 0) setShowFrontCover(true)
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)
+        }
+      }
     ])
   }
 
@@ -1054,20 +1276,41 @@ export default function ScrapbookTab() {
   async function handleDeleteBook(id: string) {
     Alert.alert('Delete scrapbook?', 'This permanently removes all pages.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        await supabase.from('social_posts').delete().eq('reference_id', id).eq('type', 'scrapbook')
-        await supabase.from('scrapbooks').delete().eq('id', id)
-        setScrapbooks(prev => prev.filter(b => b.id !== id))
-        setBookMenuId(null)
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)
-      }},
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          await supabase.from('social_posts').delete().eq('reference_id', id).eq('type', 'scrapbook')
+          await supabase.from('scrapbooks').delete().eq('id', id)
+          setScrapbooks(prev => prev.filter(b => b.id !== id))
+          setBookMenuId(null)
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)
+        }
+      },
     ])
   }
 
   async function handleToggleEdit(memberId: string, current: boolean) {
     if (!currentBook) return
-    await supabase.from('scrapbook_members').update({ can_edit: !current }).eq('scrapbook_id', currentBook.id).eq('user_id', memberId)
-    setMembers(prev => prev.map(m => m.user_id === memberId ? { ...m, can_edit: !current } : m))
+    const newValue = !current
+
+    // Optimistic update — matches the old feel
+    setMembers(prev =>
+      prev.map(m => m.user_id === memberId ? { ...m, can_edit: newValue } : m)
+    )
+
+    try {
+      const { error } = await supabase.rpc('toggle_scrapbook_member_edit', {
+        p_scrapbook_id: currentBook.id,
+        p_user_id: memberId,
+        p_can_edit: newValue,
+      })
+      if (error) throw error
+    } catch (e: any) {
+      // Roll back optimistic update on failure
+      setMembers(prev =>
+        prev.map(m => m.user_id === memberId ? { ...m, can_edit: current } : m)
+      )
+      Alert.alert('Could not update permissions', e.message)
+    }
   }
 
   async function uploadBookCover(bookId: string) {
@@ -1191,7 +1434,14 @@ export default function ScrapbookTab() {
                   </ScrollView>
                 ) : pages[currentPageIdx] ? (
                   // ⬇ Pass the scrapbook's own canvas_id so uploads go to the right bucket folder
-                  <PageCanvas key={pages[currentPageIdx].id} page={pages[currentPageIdx]} canEdit={canEdit} onSave={savePage} canvasId={uploadCanvasId} />
+                  <PageCanvas
+                    key={pages[currentPageIdx].id}
+                    page={pages[currentPageIdx]}
+                    canEdit={canEdit}
+                    onSave={savePage}
+                    canvasId={uploadCanvasId}
+                    remoteVersion={remotePageVersions[pages[currentPageIdx].id] ?? 0}
+                  />
                 ) : (
                   <View style={[st.center, { backgroundColor: '#D4C9B8' }]}>
                     <Text style={{ color: '#888', fontSize: 14, marginBottom: 20 }}>No pages yet</Text>
@@ -1447,8 +1697,8 @@ export default function ScrapbookTab() {
                       : coverUploadingId === book.id
                         ? <ActivityIndicator color={color} />
                         : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 }}>
-                            <Text style={{ fontSize: 26, fontWeight: '900', color }}>{book.name.slice(0, 1).toUpperCase()}</Text>
-                          </View>
+                          <Text style={{ fontSize: 26, fontWeight: '900', color }}>{book.name.slice(0, 1).toUpperCase()}</Text>
+                        </View>
                     }
                   </TouchableOpacity>
                   <View style={{ flex: 1 }}>

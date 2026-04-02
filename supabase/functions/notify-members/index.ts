@@ -8,9 +8,10 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 const CHUNK_SIZE = 100
 
 interface NotifyPayload {
-  type: 'capsule_media' | 'capsule_unlock' | 'scrapbook_page' | 'new_member'
+  type: 'capsule_media' | 'capsule_unlock' | 'scrapbook_page' | 'new_member' | 'social_like' | 'social_comment' | 'social_follow' | 'space_join' | 'new_message'
   capsule_id?: string
   scrapbook_id?: string
+  target_user_id?: string
   actor_id: string
   actor_name: string
   title: string
@@ -36,12 +37,23 @@ Deno.serve(async (req) => {
     )
 
     const payload: NotifyPayload = await req.json()
-    const { type, capsule_id, scrapbook_id, actor_id, title, body, data } = payload
+    const { type, capsule_id, scrapbook_id, target_user_id, actor_id, title, body, data } = payload
 
     let tokens: { user_id: string; push_token: string; display_name: string }[] = []
 
     // Get recipient tokens based on notification type
-    if (capsule_id) {
+    if (target_user_id) {
+      // Direct-to-user notification (like, comment, follow, DM, space join)
+      const { data: user } = await supabase
+        .from('users')
+        .select('id, push_token, display_name')
+        .eq('id', target_user_id)
+        .not('push_token', 'is', null)
+        .maybeSingle()
+      if (user && user.id !== actor_id && user.push_token) {
+        tokens = [{ user_id: user.id, push_token: user.push_token, display_name: user.display_name ?? '' }]
+      }
+    } else if (capsule_id) {
       const { data: members } = await supabase
         .rpc('get_capsule_member_tokens', {
           capsule_id_input: capsule_id,

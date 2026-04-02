@@ -105,3 +105,75 @@ export async function scheduleUnlockReminder(capsuleName: string, unlockDate: Da
     },
   })
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schedule the daily prompt notification (fires daily at a specific time)
+// ─────────────────────────────────────────────────────────────────────────────
+export async function scheduleDailyPromptNotification() {
+  // First, cancel existing daily prompt notifications to avoid duplicates
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync()
+  for (const n of scheduled) {
+    if (n.content.data?.type === 'dailyprompt') {
+      await Notifications.cancelScheduledNotificationAsync(n.identifier)
+    }
+  }
+
+  // Schedule for 6:00 PM daily
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: 'Time for your daily prompt 📝',
+      body: 'Tap to see today\'s question and answer together.',
+      data: { type: 'dailyprompt' },
+      sound: true,
+    },
+    trigger: {
+      type: Notifications.SchedulableTriggerInputTypes.DAILY,
+      hour: 18,
+      minute: 0,
+    },
+  })
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Friend notification helpers
+// ─────────────────────────────────────────────────────────────────────────────
+async function logNotification(
+  userId: string,
+  type: string,
+  title: string,
+  body: string,
+  data: Record<string, any> = {}
+) {
+  await supabase.from('notification_log').insert({ user_id: userId, type, title, body, data })
+}
+
+export async function notifyFriendRequest(
+  recipientId: string,
+  senderDisplayName: string,
+  senderUsername: string
+) {
+  await logNotification(
+    recipientId,
+    'friend_request',
+    'New friend request 👋',
+    `${senderDisplayName} (@${senderUsername}) sent you a friend request`,
+    { type: 'friend_request', from_username: senderUsername }
+  )
+}
+
+export async function notifyFriendAccepted(
+  originalSenderId: string,
+  acceptorDisplayName: string,
+  acceptorUsername: string
+) {
+  await logNotification(
+    originalSenderId,
+    'friend_accepted',
+    'Friend request accepted 🎉',
+    `${acceptorDisplayName} (@${acceptorUsername}) accepted your friend request`,
+    { type: 'friend_accepted', from_username: acceptorUsername }
+  )
+  sendLocalNotification(
+    'Friend request accepted 🎉',
+    `${acceptorDisplayName} accepted your friend request`
+  )
+}

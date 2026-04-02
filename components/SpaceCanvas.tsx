@@ -8,17 +8,20 @@ import {
   StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, type SharedValue } from 'react-native-reanimated'
+import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withRepeat, withTiming, type SharedValue } from 'react-native-reanimated'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { captureRef } from 'react-native-view-shot'
 import { fetchLinkPreview } from '../lib/linkPreview'
 import { safeString } from '../lib/safeContent'
 import { storageUploadUrl } from '../lib/storage'
 import { supabase } from '../lib/supabase'
+import { getLimits, useAnchorPlus } from '../lib/useAnchorPlus'
 import { WIDGET_TEMPLATES, type WidgetTemplate } from '../lib/widgetTemplates'
+import DailyPromptWidget from './DailyPromptWidget'
+import ProjectChat from './ProjectChat'
 
-const MIN_ZOOM = 0.2
-const MAX_ZOOM = 3
+const MIN_ZOOM = 0.15
+const MAX_ZOOM = 4
 const CANVAS_SIZE = 4000
 const HALF = CANVAS_SIZE / 2
 const { width: SW, height: SH } = Dimensions.get('window')
@@ -33,6 +36,19 @@ const TEXT_COLORS = [
   '#F5EEF8', '#FFFFFF', '#C9956C', '#B8A9D9', '#EF4444',
   '#3B82F6', '#22C55E', '#EAB308', '#9B8FAD', '#1A1118',
 ]
+const FONT_FAMILIES: { key: string; label: string }[] = [
+  { key: 'default', label: 'Default' },
+  { key: 'serif', label: 'Serif' },
+  { key: 'monospace', label: 'Mono' },
+]
+const PHOTO_FRAMES: { key: string; label: string }[] = [
+  { key: 'none', label: 'None' },
+  { key: 'polaroid', label: 'Polaroid' },
+  { key: 'film', label: 'Film' },
+  { key: 'shadow', label: 'Shadow' },
+  { key: 'circle', label: 'Circle' },
+]
+const KNOCK_EMOJIS = ['✨', '💛', '🔔', '👋', '💫', '🫶', '💋', '❤️‍🔥']
 const BG_COLORS = [
   '#1A1118', '#221A2C', '#0D1117', '#1A2F1E', '#2A1A1A',
   '#2A2A1A', '#1A1A2A', '#0A0A0A', '#1E1B2E', '#2D1B1B',
@@ -75,8 +91,8 @@ async function pickImage() {
   return result.assets[0].uri
 }
 
-type WidgetType = 'photo' | 'note' | 'song' | 'countdown' | 'mood' | 'capsule' | 'weather' | 'homewidget' | 'sticker' | 'link'
-type ActiveModal = null | 'note' | 'song' | 'countdown' | 'weather' | 'capsule' | 'bgmusic' | 'background' | 'homewidget' | 'sticker' | 'link' | 'templates'
+type WidgetType = 'photo' | 'note' | 'song' | 'countdown' | 'mood' | 'capsule' | 'weather' | 'homewidget' | 'sticker' | 'link' | 'voice' | 'photostack' | 'map' | 'poll' | 'knock' | 'dailyprompt'
+type ActiveModal = null | 'note' | 'song' | 'countdown' | 'weather' | 'capsule' | 'bgmusic' | 'background' | 'homewidget' | 'sticker' | 'link' | 'templates' | 'voice' | 'photostack' | 'map' | 'poll' | 'knock' | 'dailyprompt'
 type Widget = {
   id: string; canvas_id: string; type: WidgetType
   x: number; y: number; width: number; height: number
@@ -112,7 +128,7 @@ function CanvasPatternWrapper({ pattern, color, translateX, translateY, scale }:
   return <CanvasPattern pattern={pattern} color={color} offsetStyle={offsetStyle} gridStyle={gridStyle} />
 }
 
-function CanvasPattern({ pattern, color, offsetStyle, gridStyle }: {
+const CanvasPattern = React.memo(function CanvasPattern({ pattern, color, offsetStyle, gridStyle }: {
   pattern: PatternKey; color: string
   offsetStyle: any; gridStyle: any
 }) {
@@ -124,8 +140,8 @@ function CanvasPattern({ pattern, color, offsetStyle, gridStyle }: {
   const emojiOpacity = isDark ? 0.18 : 0.14
 
   const GRID = 60
-  const cols = Math.ceil(SW / (GRID * 0.2)) + 4
-  const rows = Math.ceil(SH / (GRID * 0.2)) + 4
+  const cols = Math.ceil(SW / GRID) + 3
+  const rows = Math.ceil(SH / GRID) + 3
 
   if (pattern === 'dots') {
     const dots: React.ReactElement[] = []
@@ -172,7 +188,7 @@ function CanvasPattern({ pattern, color, offsetStyle, gridStyle }: {
   const emojiMap: Record<string, string> = { hearts: '♡', stars: '✦', waves: '〜' }
   const emoji = emojiMap[pattern]
   if (emoji) {
-    const SPACING = pattern === 'waves' ? GRID * 0.6 : GRID * 1.4
+    const SPACING = pattern === 'waves' ? GRID * 1.2 : GRID * 1.6
     const items: React.ReactElement[] = []
     const eRows = Math.ceil(rows * GRID / SPACING) + 2
     const eCols = Math.ceil(cols * GRID / SPACING) + 2
@@ -189,13 +205,13 @@ function CanvasPattern({ pattern, color, offsetStyle, gridStyle }: {
   }
 
   return null
-}
+})
 
 
 // WidgetMirror: read-only content renderer for homewidget clipping
 // No gestures, just the visual output of a widget
-function WidgetMirror({ widget, userId, now, playingSongWidgetId }: {
-  widget: Widget; userId: string; now: number; playingSongWidgetId: string | null
+function WidgetMirror({ widget, userId, spaceId, now, playingSongWidgetId }: {
+  widget: Widget; userId: string; spaceId?: string; now: number; playingSongWidgetId: string | null
 }) {
   const c = widget.content || {}
   const s = widget.style || {}
@@ -302,6 +318,10 @@ function WidgetMirror({ widget, userId, now, playingSongWidgetId }: {
     )
   }
 
+  if (widget.type === 'dailyprompt' && spaceId) {
+    return <DailyPromptWidget spaceId={spaceId} userId={userId} onPress={() => { }} backgroundColor={bg} textColor={textColor} />
+  }
+
   return null
 }
 
@@ -320,20 +340,19 @@ type WidgetItemProps = {
   hwCaptureRef?: (id: string, ref: View | null) => void
   onResize: (id: string, scale: number) => void
   onRotate: (id: string, rotation: number) => void
+  onBringToFront: (id: string) => void
+  recordingWidgetId: string | null
+  spaceId: string
 }
 
-function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onStyleOpen, onMoodTap, playingSongWidgetId, onSongPlay, allWidgets, hwCaptureRef, onResize, onRotate }: WidgetItemProps) {
+function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onStyleOpen, onMoodTap, playingSongWidgetId, onSongPlay, allWidgets, hwCaptureRef, onResize, onRotate, onBringToFront, recordingWidgetId, spaceId }: WidgetItemProps) {
+  const [imageLoadError, setImageLoadError] = useState<string | null>(null)
   const posX = useSharedValue(widget.x)
   const posY = useSharedValue(widget.y)
   const startX = useSharedValue(widget.x)
   const startY = useSharedValue(widget.y)
   const dragging = useSharedValue(false)
 
-  // Persistent scale lives in widget.style.scale (1.0 by default).
-  // liveScale is a temporary multiplier active only during the pinch gesture.
-  // Final visual scale = persistentScale * liveScale.
-  // We NEVER change widget.width/height from pinch — content always renders at
-  // base size, so fonts/art/padding stay proportional at every scale level.
   const persistentScale = useSharedValue(widget.style?.scale ?? 1)
   const liveScale = useSharedValue(1)
   const savedLiveScale = useSharedValue(1)
@@ -347,13 +366,15 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
     savedRotation.value = (widget.style?.rotation ?? 0) * Math.PI / 180
   }, [widget.x, widget.y, widget.style?.rotation, widget.style?.scale])
 
-  // ── Single-finger drag ─────────────────────────────────────────────────────
+  // ── Single-finger drag (brings widget to front on start) ──────────────────
   const dragGesture = Gesture.Pan()
     .minPointers(1).maxPointers(1)
     .minDistance(6)
     .onStart(() => {
       startX.value = posX.value; startY.value = posY.value
-      dragging.value = true; runOnJS(Haptics.selectionAsync)()
+      dragging.value = true
+      runOnJS(Haptics.selectionAsync)()
+      runOnJS(onBringToFront)(widget.id)
     })
     .onUpdate(e => {
       posX.value = startX.value + e.translationX / canvasScale.value
@@ -381,6 +402,7 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
       runOnJS(Haptics.impactAsync)(Haptics.ImpactFeedbackStyle.Light)
     })
 
+
   // ── Two-finger rotate ──────────────────────────────────────────────────────
   const rotateGesture = Gesture.Rotation()
     .onStart(() => { savedRotation.value = liveRotation.value })
@@ -397,15 +419,26 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
     runOnJS(Haptics.impactAsync)(Haptics.ImpactFeedbackStyle.Heavy)
     runOnJS(onDelete)(widget.id)
   })
+  // For interactive widgets, long press opens style editor instead of delete
+  const longPressEdit = Gesture.LongPress().minDuration(600).onStart(() => {
+    runOnJS(Haptics.impactAsync)(Haptics.ImpactFeedbackStyle.Medium)
+    runOnJS(onStyleOpen)(widget.id)
+  })
+
+  // For interactive widgets, disable doubleTap
+  // so single taps pass through to inner TouchableOpacity handlers.
+  // Long press opens style editor instead of delete (delete is inside editor).
+  const INTERACTIVE_TYPES: WidgetType[] = ['knock', 'poll', 'photostack', 'voice', 'mood', 'dailyprompt']
+  const isInteractive = INTERACTIVE_TYPES.includes(widget.type)
 
   // Pinch + Rotate run simultaneously; drag is separate (single finger)
   const twoFingerGesture = Gesture.Simultaneous(pinchGesture, rotateGesture)
-  const composed = Gesture.Race(doubleTap, longPress, Gesture.Simultaneous(dragGesture, twoFingerGesture))
+  const composed = isInteractive
+    ? Gesture.Race(longPressEdit, Gesture.Simultaneous(dragGesture, twoFingerGesture))
+    : Gesture.Race(doubleTap, longPress, Gesture.Simultaneous(dragGesture, twoFingerGesture))
 
   const animStyle = useAnimatedStyle(() => ({
     position: 'absolute' as const, left: 0, top: 0,
-    width: widget.width,
-    height: widget.height,
     zIndex: widget.z_index || 1,
     opacity: dragging.value ? 0.82 : 1,
     transform: [
@@ -425,32 +458,92 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
   const br = s.borderRadius ?? 12
 
   function renderContent() {
+    // ── Photo widget ───────────────────────────────────────────────────────
     if (widget.type === 'photo') {
-      return c.url ? (
-        <Image source={{ uri: c.url }} style={{ width: '100%', height: '100%', borderRadius: br }} resizeMode="cover" />
-      ) : (
-        <View style={{ flex: 1, backgroundColor: '#2D2040', borderRadius: br, alignItems: 'center', justifyContent: 'center' }}>
-          <Text style={{ fontSize: 32 }}>📷</Text>
-        </View>
-      )
+      const frame = s.frame || 'none'
+      const renderImg = () => {
+        if (!c.url || imageLoadError) return (
+          <View style={{ flex: 1, backgroundColor: '#EF444433', borderRadius: br, alignItems: 'center', justifyContent: 'center', padding: 8 }}>
+            <Text style={{ fontSize: 24 }}>⚠️</Text>
+            <Text style={{ fontSize: 8, color: '#EF4444', textAlign: 'center' }}>Load Mismatch: {c.url ? 'Broken URL' : 'No URL'}</Text>
+          </View>
+        )
+        return <Image source={{ uri: c.url }} style={{ flex: 1, width: '100%', height: '100%', borderRadius: frame === 'none' || frame === 'shadow' ? br : 0 }} resizeMode="cover" onError={(e) => setImageLoadError(e.nativeEvent.error)} />
+      }
+
+      if (frame === 'polaroid') {
+        const title = c.label || ''
+        return (
+          <View style={{ width: '100%', height: '100%', backgroundColor: bg || '#ffffff', borderRadius: br, padding: 8, paddingBottom: 20 }}>
+            <View style={{ flex: 1, backgroundColor: '#000', borderRadius: Math.max(0, br - 4), overflow: 'hidden' }}>
+              {renderImg()}
+            </View>
+            {title ? <Text style={{ color: '#000', fontSize: 13, fontFamily: 'Caveat', textAlign: 'center', marginTop: 10 }}>{title}</Text> : null}
+          </View>
+        )
+      }
+      if (frame === 'film') {
+        return (
+          <View style={{ width: '100%', height: '100%', backgroundColor: '#111', borderRadius: br, flexDirection: 'row' }}>
+            <View style={{ width: 14, justifyContent: 'space-evenly', alignItems: 'center', paddingVertical: 6 }}>
+              {[0, 1, 2, 3, 4, 5].map(i => <View key={i} style={{ width: 8, height: 6, borderRadius: 1, backgroundColor: '#333' }} />)}
+            </View>
+            <View style={{ flex: 1, paddingVertical: 4, paddingRight: 4, overflow: 'hidden', borderRadius: 2 }}>
+              {renderImg()}
+            </View>
+          </View>
+        )
+      }
+      if (frame === 'circle') {
+        const sz = Math.min(widget.width, widget.height)
+        return (
+          <View style={{ width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: sz - 8, height: sz - 8, borderRadius: sz, overflow: 'hidden', backgroundColor: bg || '#1A1118', borderWidth: 2, borderColor: '#3D2E52' }}>
+              {renderImg()}
+            </View>
+          </View>
+        )
+      }
+      // Default / shadow frame
+      return renderImg()
     }
     if (widget.type === 'note') {
+      const fontFam = s.fontFamily === 'serif' ? 'Georgia' : s.fontFamily === 'monospace' ? (Platform.OS === 'ios' ? 'Courier New' : 'monospace') : undefined
+      const align = (s.textAlign as any) || 'left'
       return (
         <View style={{ width: '100%', height: '100%', backgroundColor: bg || c.bg || 'transparent', borderRadius: br, padding: 14 }}>
-          <Text style={{ color: textColor, fontSize, lineHeight: fontSize * 1.55 }}>{c.text}</Text>
+          <Text style={{ color: textColor, fontSize, lineHeight: fontSize * 1.55, fontFamily: fontFam, textAlign: align }}>{c.text}</Text>
         </View>
       )
     }
     if (widget.type === 'song') {
       const isPlaying = playingSongWidgetId === widget.id
+      // Vinyl spin: shared value lives for this render only.
+      // We use a ref to track the rotation SharedValue so it persists.
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      const vinylRot = useSharedValue(0)
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useEffect(() => {
+        if (isPlaying) {
+          vinylRot.value = withRepeat(withTiming(360, { duration: 3000, easing: Easing.linear }), -1, false)
+        } else {
+          vinylRot.value = vinylRot.value % 360
+        }
+      }, [isPlaying])
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      const vinylStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${vinylRot.value}deg` }] }))
       return (
         <View style={{ width: '100%', height: '100%', flexDirection: 'row', alignItems: 'center', backgroundColor: bg || '#2D2040', borderRadius: br, padding: 12, gap: 12 }}>
-          {c.albumArt ? <Image source={{ uri: c.albumArt }} style={{ width: 54, height: 54, borderRadius: 10, flexShrink: 0 }} /> : null}
+          {c.albumArt ? (
+            <Animated.View style={[{ width: 54, height: 54, borderRadius: 27, flexShrink: 0, overflow: 'hidden', borderWidth: isPlaying ? 2 : 0, borderColor: '#C9956C' }, vinylStyle]}>
+              <Image source={{ uri: c.albumArt }} style={{ width: '100%', height: '100%', borderRadius: 27 }} />
+            </Animated.View>
+          ) : <Text style={{ fontSize: 34, flexShrink: 0 }}>🎵</Text>}
           <View style={{ flex: 1, overflow: 'hidden' }}>
             <Text style={{ color: textColor, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{c.songName}</Text>
             <Text style={{ color: '#9B8FAD', fontSize: 11, marginTop: 2 }} numberOfLines={1}>{c.artist}</Text>
             {c.previewUrl ? (
-              <Text style={{ color: '#C9956C', fontSize: 10, marginTop: 5 }}>{isPlaying ? '▶ Playing…' : '🎵 Tap play'}</Text>
+              <Text style={{ color: '#C9956C', fontSize: 10, marginTop: 5 }}>{isPlaying ? '▶ Playing…' : '🎵 Tap to play'}</Text>
             ) : (
               <Text style={{ color: '#9B8FAD', fontSize: 10, marginTop: 5 }}>No preview</Text>
             )}
@@ -465,6 +558,7 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
         </View>
       )
     }
+
     if (widget.type === 'countdown') {
       const target = c.targetDate ? new Date(c.targetDate).getTime() : null
       let d = '--', h = '--', m = '--', sec = '--'
@@ -569,7 +663,7 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
                   height: w.height,
                   transform: [{ rotate: `${w.style?.rotation ?? 0}deg` }],
                 }} pointerEvents="none">
-                  <WidgetMirror widget={w} userId={userId} now={now} playingSongWidgetId={playingSongWidgetId} />
+                  <WidgetMirror widget={w} userId={userId} spaceId={spaceId} now={now} playingSongWidgetId={playingSongWidgetId} />
                 </View>
               ))
             )}
@@ -611,12 +705,109 @@ function WidgetItem({ widget, canvasScale, userId, now, onDragEnd, onDelete, onS
         </View>
       )
     }
-    return null
+    // ── Knock widget ───────────────────────────────────────────────────────
+    if (widget.type === 'knock') {
+      const knockCount = c.count || 0
+      const knockEmoji = c.emoji || '✨'
+      return (
+        <TouchableOpacity
+          activeOpacity={0.75}
+          style={{ width: '100%', height: '100%', backgroundColor: bg || '#2D2040', borderRadius: br, alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          onPress={() => onMoodTap(widget.id)}>
+          <Text style={{ fontSize: 38 }}>{knockEmoji}</Text>
+          <Text style={{ color: textColor, fontWeight: '800', fontSize: 13 }}>Knock</Text>
+          <Text style={{ color: '#C9956C', fontSize: 10 }}>{knockCount > 0 ? `${knockCount} knock${knockCount > 1 ? 's' : ''}` : 'tap to knock'}</Text>
+        </TouchableOpacity>
+      )
+    }
+    // ── Poll widget ────────────────────────────────────────────────────────
+    if (widget.type === 'poll') {
+      const options: string[] = c.options || []
+      const votes: Record<string, string> = c.votes || {}
+      const myVote = votes[userId]
+      const counts: Record<string, number> = {}
+      options.forEach(o => { counts[o] = 0 })
+      Object.values(votes).forEach(v => { if (counts[v] !== undefined) counts[v]++ })
+      const total = Object.values(counts).reduce((a, b) => a + b, 0)
+      return (
+        <View style={{ width: '100%', height: '100%', backgroundColor: bg || '#2D2040', borderRadius: br, padding: 12, gap: 6 }}>
+          <Text style={{ color: textColor, fontWeight: '700', fontSize: Math.max(fontSize, 12), marginBottom: 4 }} numberOfLines={2}>{c.question || 'Poll'}</Text>
+          {options.map((opt, idx) => {
+            const pct = total > 0 ? Math.round((counts[opt] / total) * 100) : 0
+            const chosen = myVote === opt
+            return (
+              <TouchableOpacity key={`poll-${idx}`} onPress={() => onMoodTap(widget.id + ':' + opt)}
+                style={{ borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: chosen ? '#C9956C' : '#3D2E52' }}>
+                <View style={{ position: 'absolute', top: 0, left: 0, bottom: 0, width: `${pct}%`, backgroundColor: chosen ? '#C9956C22' : '#3D2E5230' }} />
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 6 }}>
+                  <Text style={{ color: chosen ? '#C9956C' : textColor, fontSize: 11, fontWeight: chosen ? '700' : '400' }}>{opt}</Text>
+                  <Text style={{ color: '#9B8FAD', fontSize: 10 }}>{pct}%</Text>
+                </View>
+              </TouchableOpacity>
+            )
+          })}
+        </View>
+      )
+    }
+    // ── Photo Stack widget ─────────────────────────────────────────────────
+    if (widget.type === 'photostack') {
+      const urls: string[] = c.urls || []
+      const idx: number = c.currentIndex ?? 0
+      const url = urls[idx] || null
+      return (
+        <TouchableOpacity activeOpacity={0.9} style={{ flex: 1, width: '100%', height: '100%' }} onPress={() => onMoodTap(widget.id + ':next')}>
+          {url && !imageLoadError ? (
+            <Image
+              source={{ uri: url }}
+              style={{ flex: 1, width: '100%', height: '100%', borderRadius: br }}
+              resizeMode="cover"
+              onError={(e) => setImageLoadError(e.nativeEvent.error)}
+            />
+          ) : (
+            <View style={{ flex: 1, backgroundColor: imageLoadError ? '#EF444433' : '#2D2040', borderRadius: br, alignItems: 'center', justifyContent: 'center', padding: 8 }}>
+              <Text style={{ fontSize: 32 }}>{imageLoadError ? '⚠️' : '🗂️'}</Text>
+              {imageLoadError && <Text style={{ fontSize: 8, color: '#EF4444', textAlign: 'center' }}>Load Failed: {url}</Text>}
+            </View>
+          )}
+          {urls.length > 1 && (
+            <View style={{ position: 'absolute', bottom: 8, right: 10, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 10, paddingHorizontal: 7, paddingVertical: 3 }}>
+              <Text style={{ color: '#fff', fontSize: 10 }}>{idx + 1}/{urls.length}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      )
+    }
+    // ── Voice Note widget ──────────────────────────────────────────────────
+    if (widget.type === 'voice') {
+      const hasRecording = !!c.url
+      const isPlaying = playingSongWidgetId === widget.id
+      const isRecording = recordingWidgetId === widget.id
+      return (
+        <TouchableOpacity activeOpacity={0.8}
+          style={{ width: '100%', height: '100%', backgroundColor: bg || '#2D2040', borderRadius: br, alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          onPress={() => {
+            if (isRecording) { onMoodTap(widget.id + ':record') } // stop recording
+            else if (hasRecording) { onSongPlay(widget.id, c.url) }
+            else { onMoodTap(widget.id + ':record') } // start recording
+          }}>
+          <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: isRecording ? '#EF4444' : isPlaying ? '#C9956C' : hasRecording ? '#C9956C33' : '#EF444433', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 22 }}>{isRecording ? '⏺' : isPlaying ? '⏹' : hasRecording ? '🎙️' : '⏺'}</Text>
+          </View>
+          <Text style={{ color: textColor, fontSize: 11, fontWeight: '600' }}>{c.label || 'Voice Note'}</Text>
+          <Text style={{ color: isRecording ? '#EF4444' : '#9B8FAD', fontSize: 9, fontWeight: isRecording ? '700' : '400' }}>{isRecording ? '●  recording… tap to stop' : isPlaying ? 'playing…' : hasRecording ? 'tap to play' : 'tap to record'}</Text>
+        </TouchableOpacity>
+      )
+    }
+    // ── Daily Prompt widget ────────────────────────────────────────────────
+    if (widget.type === 'dailyprompt') {
+      return <DailyPromptWidget spaceId={spaceId} userId={userId} onPress={() => onMoodTap(widget.id)} backgroundColor={bg} textColor={textColor} />
+    }
+
   }
 
   return (
     <GestureDetector gesture={composed}>
-      <Animated.View style={animStyle}>
+      <Animated.View style={[animStyle, { width: widget.width, height: widget.height }]}>
         <View style={[
           { width: '100%', height: '100%', borderRadius: br, overflow: 'hidden' },
           s.borderWidth ? { borderWidth: s.borderWidth, borderColor: s.borderColor || '#3D2E52' } : {},
@@ -642,6 +833,11 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   const [userId, setUserId] = useState('')
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(Date.now())
+  const { isPlus } = useAnchorPlus()
+  const limits = getLimits(isPlus)
+
+  const [chatOpen, setChatOpen] = useState(false)
+  const [shareWidget, setShareWidget] = useState<Widget | null>(null)
 
   const soundRef = useRef<Audio.Sound | null>(null)
   const [bgPlaying, setBgPlaying] = useState(false)
@@ -657,12 +853,16 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
 
+  // Canvas pan/zoom state
   const translateX = useSharedValue(SW / 2 - HALF)
   const translateY = useSharedValue(SH / 2 - HALF)
   const savedX = useSharedValue(SW / 2 - HALF)
   const savedY = useSharedValue(SH / 2 - HALF)
   const scale = useSharedValue(1)
   const savedScale = useSharedValue(1)
+  // Saved focal point for focal-point zoom
+  const focalX = useSharedValue(0)
+  const focalY = useSharedValue(0)
 
   const [noteText, setNoteText] = useState('')
   const [songQuery, setSongQuery] = useState('')
@@ -681,7 +881,6 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   const [bgMusicQuery, setBgMusicQuery] = useState('')
   const [hwSize, setHwSize] = useState<'small' | 'medium' | 'large'>('medium')
   const [hwContent, setHwContent] = useState('')
-  const [hwInterval, setHwInterval] = useState<'5m' | '10m' | '15m' | '30m' | '1h' | '12h' | '1d'>('30m')
   const [stickerEmoji, setStickerEmoji] = useState('')
   const [linkUrl, setLinkUrl] = useState('')
   const [linkLabel, setLinkLabel] = useState('')
@@ -689,6 +888,9 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   const [bgMusicSearching, setBgMusicSearching] = useState(false)
   const [playingSongWidgetId, setPlayingSongWidgetId] = useState<string | null>(null)
   const songSoundRef = useRef<any>(null)
+  const recordingRef = useRef<Audio.Recording | null>(null)
+  const [recordingWidgetId, setRecordingWidgetId] = useState<string | null>(null)
+  const knockSavesRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const [selectedPattern, setSelectedPattern] = useState<PatternKey>('none')
 
   useEffect(() => {
@@ -778,7 +980,13 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
         setWidgets(prev => dedupeWidgets([...prev, p.new as Widget]))
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'canvas_widgets', filter: `canvas_id=eq.${canvasId}` }, p => {
-        setWidgets(prev => prev.map(w => w.id === p.new.id ? p.new as Widget : w))
+        setWidgets(prev => prev.map(w => {
+          if (w.id !== p.new.id) return w
+          // Don't override x/y if this widget is currently being dragged locally
+          // (dragging.value is on the child WidgetItem, so we just accept remote updates
+          //  since the local drag end will overwrite with the correct final position)
+          return p.new as Widget
+        }))
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'canvas_widgets', filter: `canvas_id=eq.${canvasId}` }, p => {
         setWidgets(prev => prev.filter(w => w.id !== (p.old as Widget).id))
@@ -803,15 +1011,43 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
   }
 
-  const panGesture = Gesture.Pan().minPointers(1).maxPointers(1)
+  // ── Canvas pan (single finger only) ─────────────────────────────────────────
+  const panGesture = Gesture.Pan()
+    .minPointers(1).maxPointers(1)
     .onStart(() => { savedX.value = translateX.value; savedY.value = translateY.value })
-    .onUpdate(e => { translateX.value = savedX.value + e.translationX; translateY.value = savedY.value + e.translationY })
+    .onUpdate(e => {
+      translateX.value = savedX.value + e.translationX
+      translateY.value = savedY.value + e.translationY
+    })
     .onEnd(() => { savedX.value = translateX.value; savedY.value = translateY.value })
 
+  const pinchFocalX = useSharedValue(0)
+  const pinchFocalY = useSharedValue(0)
+
+  // ── Pinch to zoom (Focal-Point Aware) ───────────────────────────────────────
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => { savedScale.value = scale.value })
-    .onUpdate(e => { scale.value = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, savedScale.value * e.scale)) })
-    .onEnd(() => { savedScale.value = scale.value })
+    .onStart((e) => {
+      savedScale.value = scale.value
+      savedX.value = translateX.value
+      savedY.value = translateY.value
+      pinchFocalX.value = e.focalX
+      pinchFocalY.value = e.focalY
+    })
+    .onUpdate(e => {
+      const nextScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, savedScale.value * e.scale))
+      const deltaScale = nextScale / savedScale.value
+
+      scale.value = nextScale
+      // Canvas scales around its own centre (HALF,HALF), so subtract HALF from
+      // the focal point before applying the standard focal-zoom formula.
+      translateX.value = (pinchFocalX.value - HALF) * (1 - deltaScale) + savedX.value * deltaScale
+      translateY.value = (pinchFocalY.value - HALF) * (1 - deltaScale) + savedY.value * deltaScale
+    })
+    .onEnd(() => {
+      savedScale.value = scale.value
+      savedX.value = translateX.value
+      savedY.value = translateY.value
+    })
 
   const canvasGesture = Gesture.Simultaneous(panGesture, pinchGesture)
 
@@ -826,15 +1062,25 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   }
 
   function getSpawnPos(w: number, h: number) {
+    // screenCenter = (canvasX - HALF) * scale + translateX + HALF
+    // Solving for canvasX that maps to screen center:
     const cx = (SW / 2 - translateX.value - HALF) / scale.value + HALF
     const cy = (SH / 2 - translateY.value - HALF) / scale.value + HALF
     return { x: cx - w / 2, y: cy - h / 2 }
   }
 
+  async function handleBringToFront(id: string) {
+    const maxZ = widgetsRef.current.reduce((mx, w) => Math.max(mx, w.z_index || 0), 0)
+    const w = widgetsRef.current.find(x => x.id === id)
+    if (!w || (w.z_index || 0) >= maxZ) return
+    const newZ = maxZ + 1
+    setWidgets(prev => prev.map(x => x.id === id ? { ...x, z_index: newZ } : x))
+    await supabase.from('canvas_widgets').update({ z_index: newZ }).eq('id', id)
+  }
+
   // ── Home widget screenshot capture ──────────────────────────────────────────
-  function intervalMs(interval: string) {
-    const map: Record<string, number> = { '5m': 5*60000, '10m': 10*60000, '15m': 15*60000, '30m': 30*60000, '1h': 3600000, '12h': 43200000, '1d': 86400000 }
-    return map[interval] || 30*60000
+  function intervalMs() {
+    return limits.widgetRefreshMin * 60000
   }
 
   async function captureAndUploadWidget(hw: Widget) {
@@ -862,7 +1108,7 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   function startWidgetCapture(hw: Widget) {
     if (!spaceId) return
     if (captureTimersRef.current[hw.id]) clearInterval(captureTimersRef.current[hw.id])
-    const ms = intervalMs(hw.content?.interval || '30m')
+    const ms = intervalMs()
     captureTimersRef.current[hw.id] = setInterval(() => captureAndUploadWidget(hw), ms)
   }
 
@@ -909,13 +1155,16 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   function handleDelete(id: string) {
     Alert.alert('Remove widget?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        await supabase.from('canvas_widgets').delete().eq('id', id)
-        setWidgets(prev => prev.filter(w => w.id !== id))
-        if (styleWidgetId === id) setStyleWidgetId(null)
-      }},
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          await supabase.from('canvas_widgets').delete().eq('id', id)
+          setWidgets(prev => prev.filter(w => w.id !== id))
+          if (styleWidgetId === id) setStyleWidgetId(null)
+        }
+      },
     ])
   }
+
 
   function handleStyleOpen(id: string) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -933,6 +1182,14 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   async function updateWidgetSize(id: string, width: number, height: number) {
     setWidgets(prev => prev.map(x => x.id === id ? { ...x, width, height } : x))
     await supabase.from('canvas_widgets').update({ width, height }).eq('id', id)
+  }
+
+  async function updateWidgetContent(id: string, updates: Record<string, any>) {
+    const w = widgets.find(x => x.id === id)
+    if (!w) return
+    const newContent = { ...w.content, ...updates }
+    setWidgets(prev => prev.map(x => x.id === id ? { ...x, content: newContent } : x))
+    await supabase.from('canvas_widgets').update({ content: newContent }).eq('id', id)
   }
 
   async function insertWidget(type: WidgetType, content: any, w = 280, h = 180) {
@@ -976,12 +1233,17 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   function closeToolbar() { setToolbarOpen(false) }
   function openModal(m: ActiveModal) { closeToolbar(); setTimeout(() => setActiveModal(m), 120) }
 
-  async function uploadImage(uri: string, pathPrefix: string): Promise<string | null> {
+  async function uploadImage(uri: string, pathPrefix: string, isAudio = false): Promise<string | null> {
     if (!canvasId) return null
     try {
-      const path = `${canvasId}/${pathPrefix}-${Date.now()}.jpg`
+      let ext = uri.split('.').pop() || ''
+      if (ext === uri || ext.length > 10 || ext.includes('/')) {
+        ext = isAudio ? 'm4a' : 'jpg'
+      }
+      const mime = isAudio ? (ext === 'm4a' ? 'audio/m4a' : `audio/${ext}`) : 'image/jpeg'
+      const path = `${canvasId}/${pathPrefix}-${Date.now()}.${ext}`
       const formData = new FormData()
-      formData.append('file', { uri, name: `${pathPrefix}.jpg`, type: 'image/jpeg' } as any)
+      formData.append('file', { uri, name: `${pathPrefix}.${ext}`, type: mime } as any)
       const { data: { session } } = await supabase.auth.getSession()
       const response = await fetch(
         storageUploadUrl('canvas-images', path),
@@ -989,6 +1251,7 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
       )
       if (!response.ok) { Alert.alert('Upload failed', await response.text()); return null }
       const { data } = supabase.storage.from('canvas-images').getPublicUrl(path)
+      Alert.alert('Debug URL', `Uploaded to:\n${data.publicUrl}`)
       return data.publicUrl
     } catch (e: any) { Alert.alert('Upload failed', e.message); return null }
   }
@@ -1025,21 +1288,25 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
   async function handleSongWidgetPlay(widgetId: string, previewUrl: string) {
     // If same widget, toggle
     if (playingSongWidgetId === widgetId) {
-      try { await songSoundRef.current?.pauseAsync() } catch {}
+      try { await songSoundRef.current?.pauseAsync() } catch { }
       setPlayingSongWidgetId(null)
       return
     }
     // Stop previous
-    try { await songSoundRef.current?.unloadAsync() } catch {}
+    try { await songSoundRef.current?.unloadAsync() } catch { }
     songSoundRef.current = null
     setPlayingSongWidgetId(widgetId)
     try {
-      const { sound } = await Audio.Sound.createAsync({ uri: previewUrl }, { isLooping: false, volume: 0.8, shouldPlay: true })
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false })
+      const { sound } = await Audio.Sound.createAsync({ uri: previewUrl }, { isLooping: false, volume: 1.0, shouldPlay: true })
       songSoundRef.current = sound
       sound.setOnPlaybackStatusUpdate((s: any) => {
         if (s.didJustFinish) setPlayingSongWidgetId(null)
       })
-    } catch { setPlayingSongWidgetId(null) }
+    } catch (err: any) {
+      Alert.alert('Playback failed', `Could not load audio. Error: ${err.message}\nURL: ${previewUrl}`)
+      setPlayingSongWidgetId(null)
+    }
   }
 
   async function handleSongSearch() {
@@ -1093,6 +1360,143 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
   }
 
+  // Extended tap handler for compound widget types (knock, poll option, photostack next)
+  async function handleWidgetTap(compoundId: string) {
+    // compoundId may be "widgetId" or "widgetId:action"
+    const [widgetId, action] = compoundId.split(':')
+    const widget = widgets.find(w => w.id === widgetId)
+    if (!widget) {
+      // fallback: treat as mood widget
+      setMoodWidgetId(compoundId)
+      return
+    }
+    if (widget.type === 'mood') { setMoodWidgetId(widgetId); return }
+    if (widget.type === 'dailyprompt') { setActiveModal('dailyprompt'); return }
+    if (widget.type === 'knock') {
+      const fresh = widgetsRef.current.find(w => w.id === widgetId)
+      const currentCount = fresh?.content?.count || 0
+      const newCount = currentCount + 1
+      const newContent = { ...(fresh?.content || widget.content), count: newCount, lastKnock: new Date().toISOString() }
+
+      // Update local state immediately for instant feedback
+      setWidgets(prev => prev.map(w => w.id === widgetId ? { ...w, content: newContent } : w))
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+
+      // Debounce the Supabase update to prevent realtime stream clashes when spamming
+      if (knockSavesRef.current[widgetId]) clearTimeout(knockSavesRef.current[widgetId])
+      knockSavesRef.current[widgetId] = setTimeout(async () => {
+        const toSave = widgetsRef.current.find(w => w.id === widgetId)?.content || newContent
+        await supabase.from('canvas_widgets').update({ content: toSave }).eq('id', widgetId)
+      }, 500)
+      return
+    }
+    if (widget.type === 'poll' && action) {
+      // action is the option string
+      const newVotes = { ...(widget.content?.votes || {}), [userId]: action }
+      const newContent = { ...widget.content, votes: newVotes }
+      setWidgets(prev => prev.map(w => w.id === widgetId ? { ...w, content: newContent } : w))
+      await supabase.from('canvas_widgets').update({ content: newContent }).eq('id', widgetId)
+      Haptics.selectionAsync()
+      return
+    }
+    if (widget.type === 'photostack' && action === 'next') {
+      const urls: string[] = widget.content?.urls || []
+      const idx = widget.content?.currentIndex ?? 0
+      const newIdx = urls.length > 0 ? (idx + 1) % urls.length : 0
+      const newContent = { ...widget.content, currentIndex: newIdx }
+      setWidgets(prev => prev.map(w => w.id === widgetId ? { ...w, content: newContent } : w))
+      Haptics.selectionAsync()
+      return
+    }
+    if (widget.type === 'voice' && action === 'record') {
+      // If already recording for this widget, stop and save
+      if (recordingRef.current && recordingWidgetId === widgetId) {
+        try {
+          await recordingRef.current.stopAndUnloadAsync()
+          await Audio.setAudioModeAsync({ allowsRecordingIOS: false })
+          const uri = recordingRef.current.getURI()
+          recordingRef.current = null
+          setRecordingWidgetId(null)
+          if (!uri) return
+          const url = await uploadImage(uri, 'voicenote', true)
+          if (!url) return
+          const newContent = { ...widget.content, url, recordedAt: new Date().toISOString() }
+          setWidgets(prev => prev.map(w => w.id === widgetId ? { ...w, content: newContent } : w))
+          await supabase.from('canvas_widgets').update({ content: newContent }).eq('id', widgetId)
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+        } catch (e: any) { Alert.alert('Save failed', e.message) }
+        return
+      }
+      // Start a new recording
+      try {
+        // Stop any existing recording first
+        if (recordingRef.current) {
+          await recordingRef.current.stopAndUnloadAsync()
+          recordingRef.current = null
+          setRecordingWidgetId(null)
+        }
+        const perm = await Audio.requestPermissionsAsync()
+        if (!perm.granted) { Alert.alert('Microphone permission needed'); return }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true })
+        const recording = new Audio.Recording()
+        await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY)
+        await recording.startAsync()
+        recordingRef.current = recording
+        setRecordingWidgetId(widgetId)
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+        // Auto-stop after 30 seconds
+        setTimeout(async () => {
+          if (recordingRef.current && recordingWidgetId === widgetId) {
+            try {
+              await recordingRef.current.stopAndUnloadAsync()
+              await Audio.setAudioModeAsync({ allowsRecordingIOS: false })
+              const uri = recordingRef.current.getURI()
+              recordingRef.current = null
+              setRecordingWidgetId(null)
+              if (!uri) return
+              const freshW = widgetsRef.current.find(w => w.id === widgetId)
+              const url = await uploadImage(uri, 'voicenote', true)
+              if (!url) return
+              const newContent = { ...(freshW?.content || {}), url, recordedAt: new Date().toISOString() }
+              setWidgets(prev => prev.map(w => w.id === widgetId ? { ...w, content: newContent } : w))
+              await supabase.from('canvas_widgets').update({ content: newContent }).eq('id', widgetId)
+            } catch { /* already stopped */ }
+          }
+        }, 30000)
+      } catch (e: any) { Alert.alert('Recording failed', e.message) }
+      return
+    }
+  }
+
+  // Poll creation state
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOpt1, setPollOpt1] = useState('')
+  const [pollOpt2, setPollOpt2] = useState('')
+  const [pollOpt3, setPollOpt3] = useState('')
+
+  async function handleAddPoll() {
+    if (!pollQuestion.trim() || !pollOpt1.trim() || !pollOpt2.trim()) { Alert.alert('Need a question and at least 2 options'); return }
+    const options = [pollOpt1.trim(), pollOpt2.trim(), pollOpt3.trim()].filter(Boolean)
+    await insertWidget('poll', { question: pollQuestion.trim(), options, votes: {} }, 260, 200)
+    setPollQuestion(''); setPollOpt1(''); setPollOpt2(''); setPollOpt3('')
+  }
+
+  async function handleAddPhotoStack() {
+    closeToolbar()
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
+    if (!perm.granted) { Alert.alert('Permission needed'); return }
+    const opts: ImagePicker.ImagePickerOptions = { quality: 0.8, allowsMultipleSelection: true } as any
+    const result = await ImagePicker.launchImageLibraryAsync(opts)
+    if (result.canceled || !result.assets.length) return
+    const urls: string[] = []
+    for (const asset of result.assets.slice(0, 5)) {
+      const url = await uploadImage(asset.uri, 'stack')
+      if (url) urls.push(url)
+    }
+    if (!urls.length) return
+    await insertWidget('photostack', { urls, currentIndex: 0 }, 280, 240)
+  }
+
   const styleWidget = widgets.find(w => w.id === styleWidgetId) ?? null
   const TEXT_TYPES: WidgetType[] = ['note', 'countdown', 'mood', 'weather', 'capsule']
 
@@ -1133,6 +1537,9 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
             <TouchableOpacity style={[st.iconBtn, bgSongName && { backgroundColor: '#C9956C22', borderColor: '#C9956C' }]} onPress={() => setActiveModal('bgmusic')}>
               <Text style={{ fontSize: 14 }}>{bgPlaying ? '🎵' : '🎧'}</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={st.iconBtn} onPress={() => setChatOpen(true)}>
+              <Text style={{ fontSize: 14 }}>💬</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={st.iconBtn} onPress={() => { setSelectedBgColor(canvasBgColor); setSelectedPattern(canvasPattern); setActiveModal('background') }}>
               <View style={{ width: 14, height: 14, borderRadius: 3, backgroundColor: canvasBgColor, borderWidth: 1, borderColor: '#9B8FAD' }} />
             </TouchableOpacity>
@@ -1148,17 +1555,18 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
 
         <GestureDetector gesture={canvasGesture}>
           <View ref={canvasViewRef} style={{ flex: 1, overflow: 'hidden', backgroundColor: canvasBgColor }} collapsable={false}>
-            <Animated.View style={[{ position: 'absolute', width: CANVAS_SIZE, height: CANVAS_SIZE, backgroundColor: canvasBgColor }, canvasStyle]}>
-              {/* Pattern lives inside the canvas — scales & pans with zoom like MS Whiteboard */}
-              <CanvasPatternWrapper pattern={canvasPattern} color={canvasBgColor} translateX={translateX} translateY={translateY} scale={scale} />
+            <CanvasPatternWrapper pattern={canvasPattern} color={canvasBgColor} translateX={translateX} translateY={translateY} scale={scale} />
+            <Animated.View style={[{ position: 'absolute', width: CANVAS_SIZE, height: CANVAS_SIZE }, canvasStyle]}>
               {widgets.map(w => (
-                <WidgetItem key={w.id} widget={w} canvasScale={scale} userId={userId} now={now}
+                <WidgetItem key={w.id} widget={w} canvasScale={scale} userId={userId} spaceId={spaceId} now={now}
                   onDragEnd={handleDragEnd} onDelete={handleDelete} onStyleOpen={handleStyleOpen}
-                  onMoodTap={(id) => setMoodWidgetId(moodWidgetId === id ? null : id)}
+                  onMoodTap={(id) => handleWidgetTap(id)}
                   playingSongWidgetId={playingSongWidgetId}
                   onSongPlay={handleSongWidgetPlay}
                   allWidgets={widgets}
                   hwCaptureRef={(id, ref) => { if (ref) hwViewRefs.current[id] = ref; else delete hwViewRefs.current[id] }}
+                  onBringToFront={handleBringToFront}
+                  recordingWidgetId={recordingWidgetId}
                   onResize={async (id, newScale) => {
                     setWidgets(prev => prev.map(x => x.id === id ? { ...x, style: { ...(x.style || {}), scale: newScale } } : x))
                     const w = widgetsRef.current.find(x => x.id === id)
@@ -1171,11 +1579,28 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                   }} />
               ))}
             </Animated.View>
-            {widgets.length === 0 && (
-              <View style={st.emptyOverlay} pointerEvents="none">
-                <Text style={{ fontSize: 44, color: '#C9956C' }}>✦</Text>
-                <Text style={st.emptyTitle}>This space is empty</Text>
-                <Text style={st.emptyText}>Tap + to add something that means something</Text>
+            {widgets.length === 0 && !toolbarOpen && (
+              <View style={{ position: 'absolute', top: SH / 2 - 160, width: SW, alignItems: 'center', zIndex: 0 }} pointerEvents="box-none">
+                <Text style={{ fontSize: 32, marginBottom: 16 }}>✦</Text>
+                <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800', marginBottom: 6 }}>Space is empty</Text>
+                <Text style={{ color: '#9B8FAD', fontSize: 13, marginBottom: 24 }}>Choose a starting point or tap + to create</Text>
+
+                <View style={{ flexDirection: 'row', gap: 14, paddingHorizontal: 20 }}>
+                  <TouchableOpacity style={st.templateCard} onPress={() => applyTemplate(WIDGET_TEMPLATES.find(t => t.id === 'memories')!)} activeOpacity={0.8}>
+                    <Text style={{ fontSize: 32, marginBottom: 12 }}>❤️</Text>
+                    <Text style={{ color: '#C9956C', fontWeight: '800', fontSize: 13, textAlign: 'center' }}>Memories</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={st.templateCard} onPress={() => applyTemplate(WIDGET_TEMPLATES.find(t => t.id === 'countdown')!)} activeOpacity={0.8}>
+                    <Text style={{ fontSize: 32, marginBottom: 12 }}>⏳</Text>
+                    <Text style={{ color: '#6BBED4', fontWeight: '800', fontSize: 13, textAlign: 'center' }}>Event</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={st.templateCard} onPress={() => applyTemplate(WIDGET_TEMPLATES.find(t => t.id === 'music')!)} activeOpacity={0.8}>
+                    <Text style={{ fontSize: 32, marginBottom: 12 }}>🎵</Text>
+                    <Text style={{ color: '#B8A9D9', fontWeight: '800', fontSize: 13, textAlign: 'center' }}>Music Wall</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </View>
@@ -1195,11 +1620,16 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                 { label: 'Countdown', emoji: '⏳', action: () => openModal('countdown') },
                 { label: 'Mood', emoji: '💛', action: async () => { closeToolbar(); await insertWidget('mood', { moods: {} }, 220, 140) } },
                 { label: 'Capsule', emoji: '📦', action: () => openModal('capsule') },
-              { label: 'Widget', emoji: '📱', action: () => openModal('homewidget') },
-              { label: 'Sticker', emoji: '🌟', action: () => openModal('sticker') },
-              { label: 'Link', emoji: '🔗', action: () => openModal('link') },
+                { label: 'Widget', emoji: '📱', action: () => openModal('homewidget') },
+                { label: 'Sticker', emoji: '🌟', action: () => openModal('sticker') },
+                { label: 'Link', emoji: '🔗', action: () => openModal('link') },
                 { label: 'Weather', emoji: '☁️', action: () => openModal('weather') },
-              { label: 'Templates', emoji: '📐', action: () => openModal('templates') },
+                { label: 'Templates', emoji: '📐', action: () => openModal('templates') },
+                { label: 'Knock', emoji: '✨', action: async () => { closeToolbar(); await insertWidget('knock', { count: 0 }, 160, 140) } },
+                { label: 'Poll', emoji: '✋', action: () => openModal('poll') },
+                { label: 'Stack', emoji: '🗂️', action: handleAddPhotoStack },
+                { label: 'Prompt', emoji: '📝', action: async () => { closeToolbar(); await insertWidget('dailyprompt', {}, 280, 180) } },
+                { label: 'Voice', emoji: '🎙️', action: async () => { closeToolbar(); await insertWidget('voice', { label: 'Voice Note', url: null }, 160, 140) } },
               ].map(btn => (
                 <TouchableOpacity key={btn.label} style={st.toolbarBtn} onPress={btn.action}>
                   <Text style={{ fontSize: 22 }}>{btn.emoji}</Text>
@@ -1250,6 +1680,7 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
               <View style={{ padding: 16 }}>
                 {styleTab === 'look' && (
                   <>
+                    {/* ── UNIVERSAL: Background colour ── */}
                     <Text style={st.styleLabel}>Background</Text>
                     <View style={st.colorGrid}>
                       {STYLE_COLORS.map(color => (
@@ -1259,6 +1690,68 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                         </TouchableOpacity>
                       ))}
                     </View>
+
+                    {/* ── PHOTO: Frame style ── */}
+                    {styleWidget.type === 'photo' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Frame</Text>
+                        <View style={st.btnRow}>
+                          {PHOTO_FRAMES.map(f => (
+                            <TouchableOpacity key={f.key} onPress={() => updateWidgetStyle(styleWidgetId, { frame: f.key })}
+                              style={[st.choiceBtn, (styleWidget.style?.frame || 'none') === f.key && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.frame || 'none') === f.key && { color: '#fff' }]}>{f.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <TouchableOpacity style={st.replaceBtn} onPress={() => handleReplaceImage(styleWidgetId)}>
+                          <Text style={st.replaceBtnText}>📷  Replace image</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+
+                    {/* ── SONG: Album art + layout ── */}
+                    {styleWidget.type === 'song' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Album art shape</Text>
+                        <View style={st.btnRow}>
+                          {[{ key: 'square', label: 'Square' }, { key: 'vinyl', label: 'Vinyl' }].map(f => (
+                            <TouchableOpacity key={f.key} onPress={() => updateWidgetStyle(styleWidgetId, { albumShape: f.key })}
+                              style={[st.choiceBtn, (styleWidget.style?.albumShape || 'square') === f.key && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.albumShape || 'square') === f.key && { color: '#fff' }]}>{f.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <TouchableOpacity style={st.replaceBtn} onPress={() => handleReplaceImage(styleWidgetId)}>
+                          <Text style={st.replaceBtnText}>📷  Replace album art</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+
+                    {/* ── NOTE: Font family + alignment ── */}
+                    {styleWidget.type === 'note' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Font</Text>
+                        <View style={st.btnRow}>
+                          {FONT_FAMILIES.map(f => (
+                            <TouchableOpacity key={f.key} onPress={() => updateWidgetStyle(styleWidgetId, { fontFamily: f.key })}
+                              style={[st.choiceBtn, (styleWidget.style?.fontFamily || 'default') === f.key && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.fontFamily || 'default') === f.key && { color: '#fff' }]}>{f.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Alignment</Text>
+                        <View style={st.btnRow}>
+                          {['left', 'center', 'right'].map(a => (
+                            <TouchableOpacity key={a} onPress={() => updateWidgetStyle(styleWidgetId, { textAlign: a })}
+                              style={[st.choiceBtn, (styleWidget.style?.textAlign || 'left') === a && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.textAlign || 'left') === a && { color: '#fff' }]}>{a === 'left' ? '◀' : a === 'center' ? '◆' : '▶'}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </>
+                    )}
+
+                    {/* ── TEXT TYPES: Text colour + size ── */}
                     {TEXT_TYPES.includes(styleWidget.type) && (
                       <>
                         <Text style={[st.styleLabel, { marginTop: 14 }]}>Text colour</Text>
@@ -1279,11 +1772,122 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                         </View>
                       </>
                     )}
-                    {(styleWidget.type === 'photo' || styleWidget.type === 'capsule' || styleWidget.type === 'song') && (
-                      <TouchableOpacity style={st.replaceBtn} onPress={() => handleReplaceImage(styleWidgetId)}>
-                        <Text style={st.replaceBtnText}>📷  Replace image</Text>
+
+                    {/* ── KNOCK: Emoji picker ── */}
+                    {styleWidget.type === 'knock' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Knock icon</Text>
+                        <View style={st.btnRow}>
+                          {KNOCK_EMOJIS.map(e => (
+                            <TouchableOpacity key={e} onPress={() => updateWidgetContent(styleWidgetId, { emoji: e })}
+                              style={[st.choiceBtn, { paddingHorizontal: 8 }, (styleWidget.content?.emoji || '✨') === e && st.choiceBtnActive]}>
+                              <Text style={{ fontSize: 18 }}>{e}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <TouchableOpacity style={[st.replaceBtn, { marginTop: 14 }]} onPress={() => updateWidgetContent(styleWidgetId, { count: 0 })}>
+                          <Text style={[st.replaceBtnText, { color: '#EF4444' }]}>🔄  Reset knock counter</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+
+                    {/* ── HOMEWIDGET: Manual refresh ── */}
+                    {styleWidget.type === 'homewidget' && (
+                      <TouchableOpacity style={[st.replaceBtn, { marginTop: 14 }]} onPress={() => {
+                        captureAndUploadWidget(styleWidget)
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+                        setStyleWidgetId(null)
+                      }}>
+                        <Text style={st.replaceBtnText}>🔄  Refresh phone widget now</Text>
                       </TouchableOpacity>
                     )}
+
+                    {/* ── COUNTDOWN: Display style ── */}
+                    {styleWidget.type === 'countdown' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Display style</Text>
+                        <View style={st.btnRow}>
+                          {[{ key: 'digital', label: 'Digital' }, { key: 'compact', label: 'Compact' }, { key: 'label', label: 'Label' }].map(f => (
+                            <TouchableOpacity key={f.key} onPress={() => updateWidgetStyle(styleWidgetId, { countdownStyle: f.key })}
+                              style={[st.choiceBtn, (styleWidget.style?.countdownStyle || 'digital') === f.key && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.countdownStyle || 'digital') === f.key && { color: '#fff' }]}>{f.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </>
+                    )}
+
+                    {/* ── VOICE: Label edit ── */}
+                    {styleWidget.type === 'voice' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Label</Text>
+                        <TextInput
+                          style={[st.input, { marginTop: 4 }]}
+                          placeholder="Voice note label"
+                          placeholderTextColor="#9B8FAD"
+                          value={styleWidget.content?.label || ''}
+                          onChangeText={t => updateWidgetContent(styleWidgetId, { label: t })}
+                        />
+                        {styleWidget.content?.url && (
+                          <TouchableOpacity style={[st.replaceBtn, { marginTop: 14 }]} onPress={() => updateWidgetContent(styleWidgetId, { url: null, recordedAt: null })}>
+                            <Text style={[st.replaceBtnText, { color: '#EF4444' }]}>🗑️  Delete recording</Text>
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    )}
+
+                    {/* ── POLL: Show percentages toggle ── */}
+                    {styleWidget.type === 'poll' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Show percentages</Text>
+                        <View style={st.btnRow}>
+                          {['Yes', 'No'].map(v => (
+                            <TouchableOpacity key={v} onPress={() => updateWidgetStyle(styleWidgetId, { showPercent: v === 'Yes' })}
+                              style={[st.choiceBtn, (styleWidget.style?.showPercent !== false) === (v === 'Yes') && st.choiceBtnActive]}>
+                              <Text style={[st.choiceBtnText, (styleWidget.style?.showPercent !== false) === (v === 'Yes') && { color: '#fff' }]}>{v}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                        <TouchableOpacity style={[st.replaceBtn, { marginTop: 14 }]} onPress={() => updateWidgetContent(styleWidgetId, { votes: {} })}>
+                          <Text style={[st.replaceBtnText, { color: '#EF4444' }]}>🔄  Reset all votes</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+
+                    {/* ── PHOTO STACK: Add photos ── */}
+                    {styleWidget.type === 'photostack' && (
+                      <>
+                        <Text style={[st.styleLabel, { marginTop: 14 }]}>Photos ({(styleWidget.content?.urls || []).length}/5)</Text>
+                        <TouchableOpacity style={st.replaceBtn} onPress={async () => {
+                          const uri = await pickImage(); if (!uri) return
+                          const url = await uploadImage(uri, 'stack-add'); if (!url) return
+                          const currentUrls = [...(styleWidget.content?.urls || [])]
+                          if (currentUrls.length >= 5) { Alert.alert('Max 5 photos'); return }
+                          currentUrls.push(url)
+                          updateWidgetContent(styleWidgetId, { urls: currentUrls })
+                        }}>
+                          <Text style={st.replaceBtnText}>📷  Add a photo</Text>
+                        </TouchableOpacity>
+                        {(styleWidget.content?.urls || []).length > 0 && (
+                          <TouchableOpacity style={[st.replaceBtn, { marginTop: 8 }]} onPress={() => {
+                            const urls = [...(styleWidget.content?.urls || [])]
+                            urls.pop()
+                            updateWidgetContent(styleWidgetId, { urls, currentIndex: 0 })
+                          }}>
+                            <Text style={[st.replaceBtnText, { color: '#EF4444' }]}>🗑️  Remove last photo</Text>
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    )}
+
+                    {/* ── CAPSULE: Replace photo ── */}
+                    {styleWidget.type === 'capsule' && (
+                      <TouchableOpacity style={st.replaceBtn} onPress={() => handleReplaceImage(styleWidgetId)}>
+                        <Text style={st.replaceBtnText}>📷  Replace capsule photo</Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* ── UNIVERSAL: Corner radius ── */}
                     <Text style={[st.styleLabel, { marginTop: 14 }]}>Corner radius</Text>
                     <View style={st.btnRow}>
                       {[0, 4, 8, 12, 20, 32].map(r => (
@@ -1293,6 +1897,8 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                         </TouchableOpacity>
                       ))}
                     </View>
+
+                    {/* ── UNIVERSAL: Opacity ── */}
                     <Text style={[st.styleLabel, { marginTop: 14 }]}>Opacity</Text>
                     <View style={st.btnRow}>
                       {[25, 50, 75, 100].map(op => (
@@ -1302,6 +1908,8 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                         </TouchableOpacity>
                       ))}
                     </View>
+
+                    {/* ── UNIVERSAL: Shadow ── */}
                     <Text style={[st.styleLabel, { marginTop: 14 }]}>Shadow</Text>
                     <View style={st.btnRow}>
                       {['Off', 'On'].map(v => (
@@ -1346,6 +1954,9 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
                 )}
               </View>
             </ScrollView>
+            <TouchableOpacity style={[st.deleteBtn, { backgroundColor: '#C9956C22', borderColor: '#C9956C', marginTop: 12 }]} onPress={() => { setStyleWidgetId(null); setShareWidget(styleWidget) }}>
+              <Text style={[st.deleteBtnText, { color: '#C9956C' }]}>Share to chat</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={st.deleteBtn} onPress={() => { handleDelete(styleWidgetId); setStyleWidgetId(null) }}>
               <Text style={st.deleteBtnText}>Delete widget</Text>
             </TouchableOpacity>
@@ -1516,6 +2127,26 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* POLL MODAL */}
+      <Modal visible={activeModal === 'poll'} transparent animationType="slide">
+        <KeyboardAvoidingView style={st.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={st.sheet}>
+            <View style={st.sheetHandle} />
+            <Text style={st.sheetTitle}>Add a poll</Text>
+            <Text style={st.inputLabel}>Question</Text>
+            <TextInput style={[st.input, { marginBottom: 12 }]} placeholder="e.g. Where for dinner?" placeholderTextColor="#9B8FAD" value={pollQuestion} onChangeText={setPollQuestion} />
+            <Text style={st.inputLabel}>Options</Text>
+            <TextInput style={[st.input, { marginBottom: 8 }]} placeholder="Option 1" placeholderTextColor="#9B8FAD" value={pollOpt1} onChangeText={setPollOpt1} />
+            <TextInput style={[st.input, { marginBottom: 8 }]} placeholder="Option 2" placeholderTextColor="#9B8FAD" value={pollOpt2} onChangeText={setPollOpt2} />
+            <TextInput style={st.input} placeholder="Option 3 (optional)" placeholderTextColor="#9B8FAD" value={pollOpt3} onChangeText={setPollOpt3} />
+            <View style={st.sheetActions}>
+              <TouchableOpacity style={st.btnSec} onPress={closeModal}><Text style={st.btnSecText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={st.btnPri} onPress={handleAddPoll}><Text style={st.btnPriText}>Add Poll</Text></TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       <Modal visible={activeModal === 'weather'} transparent animationType="slide">
         <KeyboardAvoidingView style={st.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={st.sheet}>
@@ -1551,29 +2182,21 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
             {/* Preview */}
             <View style={{ alignItems: 'center', marginBottom: 16 }}>
               <View style={[{ borderRadius: 16, borderWidth: 2, borderColor: '#C9956C', backgroundColor: '#2D2040', padding: 12, alignItems: 'center', justifyContent: 'center' },
-                hwSize === 'small' ? { width: 140, height: 140 } : hwSize === 'medium' ? { width: 280, height: 130 } : { width: 280, height: 280 }]}>
+              hwSize === 'small' ? { width: 140, height: 140 } : hwSize === 'medium' ? { width: 280, height: 130 } : { width: 280, height: 280 }]}>
                 <Text style={{ color: '#F5EEF8', fontSize: 14, textAlign: 'center' }}>{hwContent || 'Your content'}</Text>
               </View>
               <Text style={{ fontSize: 10, color: '#9B8FAD', marginTop: 6 }}>Preview</Text>
             </View>
             <Text style={st.inputLabel}>Widget content</Text>
             <TextInput style={st.input} placeholder="e.g. 'I love you' or a quote..." placeholderTextColor="#9B8FAD" value={hwContent} onChangeText={setHwContent} multiline />
-            <Text style={[st.inputLabel, { marginTop: 12 }]}>Update interval</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
-              {(['5m', '10m', '15m', '30m', '1h', '12h', '1d'] as const).map(interval => (
-                <TouchableOpacity key={interval} style={[st.choiceBtn, hwInterval === interval && st.choiceBtnActive]} onPress={() => setHwInterval(interval)}>
-                  <Text style={[st.choiceBtnText, hwInterval === interval && { color: '#fff' }]}>{interval}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <View style={[{ backgroundColor: '#C9956C15', borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#C9956C30' }]}>
-              <Text style={{ fontSize: 12, color: '#C9956C', lineHeight: 17 }}>💡 To show this on your home screen: long-press your home screen → Widgets → Anchor. The widget updates every {hwInterval}.</Text>
+            <View style={[{ backgroundColor: '#C9956C15', borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#C9956C30', marginTop: 16 }]}>
+              <Text style={{ fontSize: 12, color: '#C9956C', lineHeight: 17 }}>💡 To show this on your home screen: long-press your home screen → Widgets → Anchor. The widget auto-updates every {limits.widgetRefreshMin} minute{limits.widgetRefreshMin === 1 ? '' : 's'}.</Text>
             </View>
             <View style={st.sheetActions}>
               <TouchableOpacity style={st.btnSec} onPress={closeModal}><Text style={st.btnSecText}>Cancel</Text></TouchableOpacity>
               <TouchableOpacity style={st.btnPri} onPress={async () => {
-                await insertWidget('homewidget', { size: hwSize, content: hwContent.trim() || '', interval: hwInterval, bgColor: '#1A1118' }, hwSize === 'small' ? 240 : 480, hwSize === 'small' ? 240 : hwSize === 'medium' ? 240 : 480)
-                setHwContent(''); setHwSize('medium'); setHwInterval('30m')
+                await insertWidget('homewidget', { size: hwSize, content: hwContent.trim() || '', bgColor: '#1A1118' }, hwSize === 'small' ? 240 : 480, hwSize === 'small' ? 240 : hwSize === 'medium' ? 240 : 480)
+                setHwContent(''); setHwSize('medium')
               }}><Text style={st.btnPriText}>Add Widget</Text></TouchableOpacity>
             </View>
           </View>
@@ -1587,7 +2210,7 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
             <View style={st.sheetHandle} />
             <Text style={st.sheetTitle}>Add a sticker</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginBottom: 16 }}>
-              {['❤️','✨','🌸','⭐','🎀','🌙','☀️','🦋','🌺','💫','🎵','📸','✈️','🗺️','🏖️','🏔️','🌿','🍃','🎭','🎨','🦄','🍓','🌈','💛','🌻','🦊','🐝','🍀','🔮','💎'].map(e => (
+              {['❤️', '✨', '🌸', '⭐', '🎀', '🌙', '☀️', '🦋', '🌺', '💫', '🎵', '📸', '✈️', '🗺️', '🏖️', '🏔️', '🌿', '🍃', '🎭', '🎨', '🦄', '🍓', '🌈', '💛', '🌻', '🦊', '🐝', '🍀', '🔮', '💎'].map(e => (
                 <TouchableOpacity key={e} style={[{ width: 52, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: stickerEmoji === e ? '#C9956C22' : '#2D2040', borderWidth: 1, borderColor: stickerEmoji === e ? '#C9956C' : '#3D2E52' }]} onPress={() => setStickerEmoji(e)}>
                   <Text style={{ fontSize: 28 }}>{e}</Text>
                 </TouchableOpacity>
@@ -1679,9 +2302,19 @@ export default function SpaceCanvas({ spaceId, onBack }: { spaceId: string; onBa
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <ProjectChat
+        visible={chatOpen}
+        onClose={() => setChatOpen(false)}
+        projectType="space"
+        projectId={spaceId}
+        currentUserId={userId}
+      />
+
     </GestureHandlerRootView>
   )
 }
+
 
 const st = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#1A1118' },
@@ -1735,4 +2368,5 @@ const st = StyleSheet.create({
   musicCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
   playBtn: { backgroundColor: '#C9956C', borderRadius: 20, width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   musicEmptyCard: { backgroundColor: '#2D2040', borderRadius: 16, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#3D2E52', borderStyle: 'dashed' },
+  templateCard: { paddingVertical: 20, paddingHorizontal: 10, backgroundColor: '#221A2C', borderRadius: 20, borderWidth: 1, borderColor: '#3D2E52', alignItems: 'center', width: (SW - 68) / 3 }
 })

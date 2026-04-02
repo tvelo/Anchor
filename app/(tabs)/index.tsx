@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics'
-import { router } from 'expo-router'
+import { router, useFocusEffect } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert, Animated, Dimensions, Image, Modal,
@@ -9,8 +9,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { PromptModal } from '../../components/PromptModal'
 import { safeString } from '../../lib/safeContent'
-import { useTheme } from '../../lib/ThemeContext'
 import { supabase } from '../../lib/supabase'
+import { useTheme } from '../../lib/ThemeContext'
 
 const { width: SW } = Dimensions.get('window')
 
@@ -198,7 +198,36 @@ export default function Home() {
     const hour = new Date().getHours()
     setGreeting(hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening')
     load()
+
+    // Listen for space deletions and insertions
+    const ch = supabase.channel('home-canvas-changes')
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'canvases' }, payload => {
+        setSpaces(prev => prev.filter(s => s.id !== (payload.old as any).id))
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'canvases' }, () => {
+        supabase.auth.getUser().then(({ data: { user } }) => { if (user) loadSpaces(user.id) })
+      })
+      .subscribe()
+
+    return () => { supabase.removeChannel(ch) }
   }, [])
+
+  // Re-fetch name and friends every time this screen comes into focus
+  // This ensures name updates from Settings are reflected immediately
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[Home] focused — refreshing name')
+      supabase.auth.getUser().then(({ data: { user } }) => {
+        if (!user) return
+        supabase.from('users').select('display_name').eq('id', user.id).maybeSingle().then(({ data, error }) => {
+          console.log('[Home] name fetch result:', data, error)
+          if (data?.display_name) setName(data.display_name)
+        })
+        loadFriends(user.id)
+      })
+    }, [])
+  )
+       
 
   function animateIn() {
     Animated.parallel([
@@ -223,9 +252,8 @@ export default function Home() {
       const { data: prof } = await supabase.from('users').select('display_name').eq('id', user.id).maybeSingle()
       const dn = prof?.display_name || user.user_metadata?.display_name || user.email?.split('@')[0] || 'you'
       setName(dn)
-      // Ensure a users row exists so profile edits work
       if (!prof) {
-        await supabase.from('users').upsert({ id: user.id, display_name: dn }).catch(() => {})
+        await supabase.from('users').upsert({ id: user.id, display_name: dn })
       }
 
       await Promise.all([
@@ -272,33 +300,101 @@ export default function Home() {
           }
         } catch {}
       }
-      const { data: memberships } = await supabase.from('travel_capsule_members').select('capsule_id').eq('user_id', uid)
-      const capsuleIds = (memberships ?? []).map((m: any) => m.capsule_id)
-      if (capsuleIds.length) {
-        const { data: capsules } = await supabase.from('travel_capsules').select('id, name').in('id', capsuleIds).limit(2)
-        for (const cap of capsules ?? []) {
-          const { data: media } = await supabase.from('travel_capsule_media').select('id, created_at').eq('capsule_id', cap.id).order('created_at', { ascending: false }).limit(1)
-          if (media?.[0]) activityItems.push({ id: `trip-${media[0].id}`, type: 'trip', title: cap.name, subtitle: 'New memory uploaded', spaceId: '', spaceName: 'Trips', createdAt: media[0].created_at, emoji: '✈️' })
-        }
-      }
       activityItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       setActivity(activityItems.slice(0, 5))
     } catch {}
   }
 
-  async function loadFriends(uid: string) {
-    try {
-      const { data: follows } = await supabase.from('social_follows').select('following_id').eq('follower_id', uid)
-      const followingIds = (follows ?? []).map((f: any) => f.following_id)
-      if (!followingIds.length) { setFriends([]); return }
-      const { data: profiles } = await supabase.from('social_profiles').select('id, username, display_name, avatar_url').in('id', followingIds)
-      const { data: followsBack } = await supabase.from('social_follows').select('follower_id').eq('following_id', uid).in('follower_id', followingIds)
-      const followsBackSet = new Set((followsBack ?? []).map((f: any) => f.follower_id))
-      const fr: Friend[] = (profiles ?? []).map((p: any) => ({ id: p.id, username: p.username, display_name: p.display_name, avatar_url: p.avatar_url, is_following_back: followsBackSet.has(p.id) }))
-      fr.sort((a, b) => Number(b.is_following_back) - Number(a.is_following_back))
-      setFriends(fr)
-    } catch {}
+ // Replace your existing loadFriends function in home.tsx with this:
+
+async function loadFriends(uid: string) {
+  try {
+    // Load accepted friends from the friends table
+    const { data: accepted } = await supabase
+      .from('friends')
+      .select(`
+        requester_id, addressee_id,
+        requester:requester_id(id, username, display_name, avatar_url),
+        addressee:addressee_id(id, username, display_name, avatar_url)
+      `)
+      .or(`requester_id.eq.${uid},addressee_id.eq.${uid}`)
+      .eq('status', 'accepted')
+      .limit(10)
+
+    if (!accepted?.length) { setFriends([]); return }
+
+    // Get the other person's profile from each row
+    const profiles = accepted.map((f: any) =>
+      f.requester_id === uid ? f.addressee : f.requester
+    )
+
+    // Try to sort by who you've messaged most recently
+    // Get conversation IDs the user is in
+    const { data: myMemberships } = await supabase
+      .from('conversation_members')
+      .select('conversation_id')
+      .eq('user_id', uid)
+
+    const myConvIds = (myMemberships ?? []).map((m: any) => m.conversation_id)
+
+    if (myConvIds.length > 0) {
+      // For each friend, find if there's a DM and its last message time
+      const withActivity = await Promise.all(
+        profiles.map(async (p: any) => {
+          try {
+            const { data: shared } = await supabase
+              .from('conversation_members')
+              .select('conversation_id')
+              .eq('user_id', p.id)
+              .in('conversation_id', myConvIds)
+              .limit(1)
+
+            if (shared?.length) {
+              const { data: conv } = await supabase
+                .from('conversations')
+                .select('updated_at')
+                .eq('id', shared[0].conversation_id)
+                .eq('type', 'dm')
+                .maybeSingle()
+              return { ...p, lastActivity: conv?.updated_at || null }
+            }
+          } catch {}
+          return { ...p, lastActivity: null }
+        })
+      )
+
+      // Sort: friends with recent activity first, then alphabetically
+      withActivity.sort((a: any, b: any) => {
+        if (a.lastActivity && b.lastActivity) {
+          return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime()
+        }
+        if (a.lastActivity) return -1
+        if (b.lastActivity) return 1
+        return 0
+      })
+
+      // Show up to 3
+      setFriends(withActivity.slice(0, 3).map((p: any) => ({
+        id: p.id,
+        username: p.username,
+        display_name: p.display_name,
+        avatar_url: p.avatar_url,
+        is_following_back: true,
+      })))
+    } else {
+      // No conversations yet — just show first 3 friends
+      setFriends(profiles.slice(0, 3).map((p: any) => ({
+        id: p.id,
+        username: p.username,
+        display_name: p.display_name,
+        avatar_url: p.avatar_url,
+        is_following_back: true,
+      })))
+    }
+  } catch (e) {
+    console.log('loadFriends error', e)
   }
+}
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -348,21 +444,34 @@ export default function Home() {
             <Text style={[st.greetingText, { color: C.textSecondary }]}>{greeting}</Text>
             <Text style={[st.nameText, { color: C.textPrimary }]}>{firstName} ✦</Text>
           </View>
-          <TouchableOpacity style={[st.avatarCircle, { backgroundColor: C.accentSoft, borderColor: C.accent + '60', borderWidth: 1.5 }]}
-            onPress={() => router.push('/(tabs)/settings' as any)}
-            accessibilityRole="button" accessibilityLabel="Open settings">
-            <Text style={[st.avatarText, { color: C.accent }]}>{firstName.slice(0, 2).toUpperCase()}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <TouchableOpacity
+              style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border }}
+              onPress={() => router.push('/messages' as any)}
+              accessibilityRole="button" accessibilityLabel="Messages">
+              <Text style={{ fontSize: 18 }}>✉️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.surface, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border }}
+              onPress={() => router.push('/notifications' as any)}
+              accessibilityRole="button" accessibilityLabel="Notifications">
+              <Text style={{ fontSize: 18 }}>🔔</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[st.avatarCircle, { backgroundColor: C.accentSoft, borderColor: C.accent + '60', borderWidth: 1.5 }]}
+              onPress={() => router.push('/(tabs)/settings' as any)}
+              accessibilityRole="button" accessibilityLabel="Open settings">
+              <Text style={[st.avatarText, { color: C.accent }]}>{firstName.slice(0, 2).toUpperCase()}</Text>
+            </TouchableOpacity>
+          </View>
         </Animated.View>
 
         {/* Quick Actions */}
         <Animated.View style={{ opacity: cardAnims[0].o, transform: [{ translateY: cardAnims[0].y }] }}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={st.quickRow}>
             {[
+              { emoji: '❤️', label: 'Space',     route: '/(tabs)/space' },
               { emoji: '📖', label: 'Scrapbook', route: '/(tabs)/scrapbook' },
               { emoji: '✈️', label: 'Trips',     route: '/(tabs)/trips' },
-              { emoji: '💬', label: 'Socials',   route: '/(tabs)/social' },
-              { emoji: '❤️', label: 'Space',     route: '/(tabs)/space' },
             ].map(item => (
               <TouchableOpacity key={item.label} style={[st.quickBtn, { backgroundColor: C.surface, borderColor: C.border }]}
                 onPress={() => { Haptics.selectionAsync(); router.push(item.route as any) }}
@@ -400,7 +509,7 @@ export default function Home() {
                 <Text style={{ color: C.textMuted, fontSize: 10, fontWeight: '600' }}>Add</Text>
               </TouchableOpacity>
               {friends.map(friend => (
-                <FriendAvatar key={friend.id} friend={friend} size={48} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/(tabs)/social' as any) }} />
+                <FriendAvatar key={friend.id} friend={friend} size={48} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/messages' as any) }} />
               ))}
             </ScrollView>
           )}
@@ -436,7 +545,16 @@ export default function Home() {
               const color = getSpaceColor(space.id)
               return (
                 <TouchableOpacity key={space.id} style={[st.spaceCard, { backgroundColor: C.surface, borderColor: C.border }]}
-                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); router.push(`/space/${space.id}` as any) }} activeOpacity={0.85}>
+                  onPress={async () => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                    const { data } = await supabase.from('canvases').select('id').eq('id', space.id).maybeSingle()
+                    if (!data) {
+                      setSpaces(prev => prev.filter(s => s.id !== space.id))
+                      Alert.alert('Space not found', 'This space has been deleted.')
+                      return
+                    }
+                    router.push(`/space/[id]?id=${space.id}` as any)
+                  }} activeOpacity={0.85}>
                   <View style={[st.spaceColorBar, { backgroundColor: color }]} />
                   <View style={st.spaceCardInner}>
                     <View style={[st.spaceIcon, { backgroundColor: color + '25' }]}>
@@ -474,7 +592,7 @@ export default function Home() {
               {activity.map((item, i) => (
                 <TouchableOpacity key={item.id}
                   style={[st.activityRow, i < activity.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border }]}
-                  onPress={() => { Haptics.selectionAsync(); if (item.type === 'scrapbook') router.push('/(tabs)/scrapbook' as any); else router.push('/(tabs)/trips' as any) }}>
+                  onPress={() => { Haptics.selectionAsync(); router.push('/(tabs)/scrapbook' as any) }}>
                   <View style={[st.activityDot, { backgroundColor: C.accentSoft }]}>
                     <Text style={{ fontSize: 16 }}>{item.emoji}</Text>
                   </View>
@@ -496,10 +614,9 @@ export default function Home() {
           </View>
           <View style={st.featureGrid}>
             {[
-              { route: '/(tabs)/scrapbook', title: 'Scrapbook',       sub: 'Build pages together',    emoji: '📖', bg: '#B8A9D9' },
-              { route: '/(tabs)/trips',     title: 'Travel Capsules', sub: 'Lock & unlock memories',  emoji: '✈️', bg: '#6BBED4' },
-              { route: '/(tabs)/social',    title: 'Socials',         sub: 'Share with followers',    emoji: '💫', bg: '#D46B8A' },
-              { route: '/(tabs)/space',     title: 'Canvas',          sub: 'Your shared board',       emoji: '❤️', bg: '#C9956C' },
+              { route: '/(tabs)/space',     title: 'Canvas',    sub: 'Your shared board',    emoji: '❤️', bg: '#C9956C' },
+              { route: '/(tabs)/scrapbook', title: 'Scrapbook', sub: 'Build pages together', emoji: '📖', bg: '#B8A9D9' },
+              { route: '/(tabs)/trips',     title: 'Trips',     sub: 'Travel time capsules', emoji: '✈️', bg: '#6BBED4' },
             ].map(f => (
               <TouchableOpacity key={f.title} style={[st.featureCard, { backgroundColor: f.bg + '18', borderColor: f.bg + '40' }]}
                 onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push(f.route as any) }}

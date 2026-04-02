@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
+import { notifyMembers } from '../../../lib/network'
 import { supabase } from '../../../lib/supabase'
 
 export default function JoinSpace() {
@@ -63,6 +64,13 @@ export default function JoinSpace() {
             setMessage('Failed to join. Please try again.')
             return
           }
+        }
+
+        // Notify space owner
+        const { data: canvas } = await supabase.from('canvases').select('owner_id').eq('id', id).maybeSingle()
+        if (canvas?.owner_id) {
+          const { data: prof } = await supabase.from('social_profiles').select('display_name').eq('id', user.id).maybeSingle()
+          notifyMembers({ type: 'space_join', target_user_id: canvas.owner_id, actor_id: user.id, actor_name: prof?.display_name ?? 'Someone', title: 'New member ✦', body: `${prof?.display_name ?? 'Someone'} joined "${space.name}"` }).catch(() => {})
         }
       }
 

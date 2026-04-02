@@ -352,13 +352,9 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
       <TouchableOpacity
-        onPress={onPress} onLongPress={onLongPress}
+        onPress={onPress}
         onPressIn={handlePressIn} onPressOut={handlePressOut}
-        delayLongPress={300}
         activeOpacity={1}
-        {...(Platform.OS === 'web' ? {
-          onContextMenu: (e: any) => { e.preventDefault(); onLongPress(); }
-        } : {})}
         style={[st.card, { borderColor: isLocked ? 'rgba(123,110,246,0.3)' : 'rgba(94,186,138,0.3)' }]}>
         <View style={[st.cardHeader, { backgroundColor: isLocked ? C.lockedSoft : C.publicSoft }]}>
           {capsule.cover_url
@@ -374,7 +370,15 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
           </View>
         </View>
         <View style={st.cardBody}>
-          <Text style={st.cardName}>{capsule.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={[st.cardName, { flex: 1 }]}>{capsule.name}</Text>
+            <TouchableOpacity
+              onPress={(e) => { e.stopPropagation(); onLongPress(); }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ padding: 4, marginLeft: 8 }}>
+              <Text style={{ color: C.textSecondary, fontSize: 20, lineHeight: 20 }}>⋯</Text>
+            </TouchableOpacity>
+          </View>
           {capsule.destination ? <Text style={st.cardDestination}>📍 {capsule.destination}</Text> : null}
           {isLocked && capsule.unlock_date && (
             <View style={st.countdownRow}>
@@ -404,7 +408,6 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
     </Animated.View>
   );
 }
-
 // ─── Create Capsule Modal ─────────────────────────────────────────────────────
 function CreateCapsuleModal({ visible, onClose, onCreated, canvasId, userId, isPaid }: {
   visible: boolean; onClose: () => void; onCreated: (c: TravelCapsule) => void;

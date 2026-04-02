@@ -353,7 +353,12 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
       <TouchableOpacity
         onPress={onPress} onLongPress={onLongPress}
-        onPressIn={handlePressIn} onPressOut={handlePressOut} activeOpacity={1}
+        onPressIn={handlePressIn} onPressOut={handlePressOut}
+        delayLongPress={300}
+        activeOpacity={1}
+        {...(Platform.OS === 'web' ? {
+          onContextMenu: (e: any) => { e.preventDefault(); onLongPress(); }
+        } : {})}
         style={[st.card, { borderColor: isLocked ? 'rgba(123,110,246,0.3)' : 'rgba(94,186,138,0.3)' }]}>
         <View style={[st.cardHeader, { backgroundColor: isLocked ? C.lockedSoft : C.publicSoft }]}>
           {capsule.cover_url
@@ -601,7 +606,7 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
   const memberIdSet = new Set(members.map(m => m.user_id));
 
   // Stable ref so realtime/polling callbacks always call the latest loadData
-  const loadDataRef = useRef<() => Promise<void>>();
+  const loadDataRef = useRef<((isRefresh?: boolean) => Promise<void>) | undefined>(undefined)
 
   const loadData = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -979,7 +984,7 @@ export default function TripsScreen() {
 
   // Stable refs — prevent realtime/polling callbacks from going stale
   const userIdRef = useRef('');
-  const loadCapsulesRef = useRef<(uid: string, isRefresh?: boolean) => Promise<void>>();
+  const loadCapsulesRef = useRef<((uid: string, isRefresh?: boolean) => Promise<void>) | undefined>(undefined)
 
   // ── Load capsules ─────────────────────────────────────────────────────
   const loadCapsules = useCallback(async (uId: string, isRefresh = false) => {
@@ -1079,7 +1084,7 @@ export default function TripsScreen() {
         );
         // Keep active capsule in sync too
         setActiveCapsule(prev =>
-          prev?.id === payload.new.id ? { ...prev, ...payload.new } : prev
+          prev?.id === payload.new.id ? { ...prev, ...(payload.new as TravelCapsule) } : prev
         );
       })
       // New media → bump count on list card

@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 import { Stack, router, useSegments } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import BannedScreen from '../components/BannedScreen'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 
 configureNotifications()
 
@@ -107,6 +108,7 @@ export default function RootLayout() {
           <Stack.Screen name="messages" />
           <Stack.Screen name="join" />
         </Stack>
+        <SpeedInsights />
       </ThemeProvider>
     </AudioManagerProvider>
   )

@@ -243,20 +243,16 @@ function MediaViewer({ media, initialIndex, visible, onClose }: {
         </View>
 
         {/* FIX: Video container uses flex + overflow hidden to prevent blowout on web */}
-        <View style={{ flex: 1, backgroundColor: '#000', overflow: 'hidden' }}>
+        <View style={{ flex: 1, backgroundColor: '#000', position: 'relative' }}>
           {item.type === 'video' ? (
             <Video
               key={item.url}
               source={{ uri: item.url }}
-              style={{ width: '100%', height: '100%' }}
+              style={StyleSheet.absoluteFillObject}
               resizeMode={ResizeMode.CONTAIN}
               useNativeControls
               shouldPlay={false}
               isLooping={false}
-              onError={(err) => {
-                console.log('[Video] error:', err);
-                Alert.alert('Playback error', 'Could not play this video.');
-              }}
             />
           ) : (
             <ExpoImage

@@ -1,11 +1,11 @@
 import * as Notifications from 'expo-notifications'
+import { Stack, router, useSegments } from 'expo-router'
+import { useEffect, useRef, useState } from 'react'
+import BannedScreen from '../components/BannedScreen'
 import { AudioManagerProvider } from '../lib/AudioManager'
 import { ThemeProvider } from '../lib/ThemeContext'
 import { configureNotifications, registerForPushNotifications, scheduleDailyPromptNotification } from '../lib/notifications'
 import { supabase } from '../lib/supabase'
-import { Stack, router, useSegments } from 'expo-router'
-import { useEffect, useRef, useState } from 'react'
-import BannedScreen from '../components/BannedScreen'
 
 configureNotifications()
 
@@ -59,8 +59,8 @@ export default function RootLayout() {
       setIsLoggedIn(!!session?.user)
       if (session?.user) {
         checkBan(session.user.id)
-        registerForPushNotifications().catch(() => {})
-        scheduleDailyPromptNotification().catch(() => {})
+        registerForPushNotifications().catch(() => { })
+        scheduleDailyPromptNotification().catch(() => { })
       } else {
         setBanStatus(null)
       }
@@ -73,8 +73,8 @@ export default function RootLayout() {
     setIsLoggedIn(!!user)
     if (user) {
       await checkBan(user.id)
-      registerForPushNotifications().catch(() => {})
-      scheduleDailyPromptNotification().catch(() => {})
+      registerForPushNotifications().catch(() => { })
+      scheduleDailyPromptNotification().catch(() => { })
     }
     setReady(true)
   }

@@ -35,6 +35,7 @@
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
     "@supabase/supabase-js": "^2.99.1",
+    "@vercel/speed-insights": "^2.0.0",
     "expo": "~54.0.33",
     "expo-audio": "~1.1.1",
     "expo-av": "~16.0.8",

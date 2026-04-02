@@ -242,13 +242,17 @@ function MediaViewer({ media, initialIndex, visible, onClose }: {
           </TouchableOpacity>
         </View>
 
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
+        {/* FIX: Video container uses flex + overflow hidden to prevent blowout on web */}
+        <View style={{ flex: 1, backgroundColor: '#000', overflow: 'hidden' }}>
           {item.type === 'video' ? (
             <Video
-              key={item.url} source={{ uri: item.url }}
-              style={StyleSheet.absoluteFillObject}
+              key={item.url}
+              source={{ uri: item.url }}
+              style={{ width: '100%', height: '100%' }}
               resizeMode={ResizeMode.CONTAIN}
-              useNativeControls shouldPlay={false} isLooping={false}
+              useNativeControls
+              shouldPlay={false}
+              isLooping={false}
               onError={(err) => {
                 console.log('[Video] error:', err);
                 Alert.alert('Playback error', 'Could not play this video.');
@@ -256,8 +260,11 @@ function MediaViewer({ media, initialIndex, visible, onClose }: {
             />
           ) : (
             <ExpoImage
-              source={{ uri: item.url }} style={StyleSheet.absoluteFillObject}
-              contentFit="contain" cachePolicy="memory-disk" transition={200}
+              source={{ uri: item.url }}
+              style={StyleSheet.absoluteFillObject}
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              transition={200}
             />
           )}
         </View>
@@ -345,15 +352,18 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
   const isLocked = capsule.visibility === 'locked' && !capsule.is_unlocked;
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const accentColor = isLocked ? C.locked : C.public;
+
   const handlePressIn = () =>
     Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 300, friction: 20 }).start();
   const handlePressOut = () =>
     Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 300, friction: 20 }).start();
+
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
       <TouchableOpacity
         onPress={onPress}
-        onPressIn={handlePressIn} onPressOut={handlePressOut}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
         activeOpacity={1}
         style={[st.card, { borderColor: isLocked ? 'rgba(123,110,246,0.3)' : 'rgba(94,186,138,0.3)' }]}>
         <View style={[st.cardHeader, { backgroundColor: isLocked ? C.lockedSoft : C.publicSoft }]}>
@@ -371,12 +381,13 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
         </View>
         <View style={st.cardBody}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={[st.cardName, { flex: 1 }]}>{capsule.name}</Text>
+            <Text style={[st.cardName, { flex: 1 }]} numberOfLines={1}>{capsule.name}</Text>
+            {/* FIX: plain onPress with no event param — works on both native and web */}
             <TouchableOpacity
-              onPress={(e) => { e.stopPropagation(); onLongPress(); }}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{ padding: 4, marginLeft: 8 }}>
-              <Text style={{ color: C.textSecondary, fontSize: 20, lineHeight: 20 }}>⋯</Text>
+              onPress={() => onLongPress()}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={st.menuBtn}>
+              <Text style={st.menuBtnText}>⋯</Text>
             </TouchableOpacity>
           </View>
           {capsule.destination ? <Text style={st.cardDestination}>📍 {capsule.destination}</Text> : null}
@@ -408,6 +419,7 @@ function CapsuleCard({ capsule, onPress, onLongPress }: {
     </Animated.View>
   );
 }
+
 // ─── Create Capsule Modal ─────────────────────────────────────────────────────
 function CreateCapsuleModal({ visible, onClose, onCreated, canvasId, userId, isPaid }: {
   visible: boolean; onClose: () => void; onCreated: (c: TravelCapsule) => void;
@@ -441,9 +453,6 @@ function CreateCapsuleModal({ visible, onClose, onCreated, canvasId, userId, isP
           parsedDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).toISOString();
       }
 
-      // Use RPC to insert capsule + member atomically, avoiding the RLS
-      // chicken-and-egg: SELECT policy (anchor_is_capsule_member) would block
-      // the RETURNING clause before the member row exists.
       const { data: newId, error } = await supabase.rpc('create_travel_capsule', {
         p_name: name.trim(),
         p_canvas_id: canvasId || null,
@@ -454,7 +463,6 @@ function CreateCapsuleModal({ visible, onClose, onCreated, canvasId, userId, isP
       });
       if (error) throw error;
 
-      // Member row now exists, so SELECT policy passes
       const { data, error: fetchErr } = await supabase
         .from('travel_capsules').select('*').eq('id', newId).single();
       if (fetchErr) throw fetchErr;
@@ -604,12 +612,9 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
   const isLocked = capsule.visibility === 'locked' && !capsule.is_unlocked;
   const myMediaCount = media.filter(m => m.uploaded_by === userId).length;
   const mediaLimit = isPaid ? PAID_MEDIA_LIMIT : FREE_MEDIA_LIMIT;
-  const accentColor = isLocked ? C.locked : C.public;
-  const accentSoft = isLocked ? C.lockedSoft : C.publicSoft;
   const memberIdSet = new Set(members.map(m => m.user_id));
 
-  // Stable ref so realtime/polling callbacks always call the latest loadData
-  const loadDataRef = useRef<((isRefresh?: boolean) => Promise<void>) | undefined>(undefined)
+  const loadDataRef = useRef<((isRefresh?: boolean) => Promise<void>) | undefined>(undefined);
 
   const loadData = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
@@ -640,7 +645,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         setMembers(memberData.map((m: any) => ({ ...m, display_name: nameMap[m.user_id] ?? 'Unknown' })));
       } else { setMembers([]); }
 
-      // Re-fetch the capsule itself so unlock state is always fresh
       const { data: freshCapsule } = await supabase.from('travel_capsules')
         .select('*').eq('id', capsule.id).single();
       if (freshCapsule) {
@@ -652,10 +656,8 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
     finally { setLoading(false); }
   }, [capsule.id, userId]);
 
-  // Keep ref current
   useEffect(() => { loadDataRef.current = loadData; }, [loadData]);
 
-  // Initial load + auto-unlock check
   useEffect(() => {
     loadData();
     if (capsule.visibility === 'locked' && !capsule.is_unlocked && capsule.unlock_date &&
@@ -664,11 +666,9 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
     }
   }, []);
 
-  // ── Realtime subscription for the detail screen ──────────────────────────
   useEffect(() => {
     const channel = supabase
       .channel(`capsule-detail-${capsule.id}`)
-      // Capsule row updated (unlocked remotely, cover changed, etc.)
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public',
         table: 'travel_capsules',
@@ -678,26 +678,19 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         setCapsule(updated);
         onUpdated(updated);
       })
-      // New media uploaded by any member
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public',
         table: 'travel_capsule_media',
         filter: `capsule_id=eq.${capsule.id}`,
-      }, () => {
-        loadDataRef.current?.();
-      })
-      // New member joined
+      }, () => { loadDataRef.current?.(); })
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public',
         table: 'travel_capsule_members',
         filter: `capsule_id=eq.${capsule.id}`,
-      }, () => {
-        loadDataRef.current?.();
-      })
+      }, () => { loadDataRef.current?.(); })
       .subscribe();
 
-    // 30s polling fallback in case realtime drops
-    const poll = setInterval(() => { loadDataRef.current?.(true as any); }, POLL_INTERVAL_MS);
+    const poll = setInterval(() => { loadDataRef.current?.(true); }, POLL_INTERVAL_MS);
 
     return () => {
       supabase.removeChannel(channel);
@@ -788,7 +781,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
     }
   };
 
-  // Current isLocked state derived from latest capsule state
   const currentlyLocked = capsule.visibility === 'locked' && !capsule.is_unlocked;
 
   return (
@@ -803,7 +795,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
       <FriendInviteModal visible={showInvite} capsule={capsule} userId={userId}
         existingMemberIds={memberIdSet} onClose={() => setShowInvite(false)} onAdded={() => loadData(true)} />
 
-      {/* Header */}
       <View style={st.detailHeader}>
         <TouchableOpacity onPress={onBack} style={st.backBtn}>
           <Text style={st.backBtnText}>‹ Back</Text>
@@ -820,7 +811,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         </TouchableOpacity>
       </View>
 
-      {/* Status banner — always reflects live capsule state */}
       <View style={[st.statusBanner, {
         backgroundColor: currentlyLocked ? C.lockedSoft : C.publicSoft,
         borderColor: (currentlyLocked ? C.locked : C.public) + '40',
@@ -839,7 +829,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         )}
       </View>
 
-      {/* Upload bar */}
       <View style={st.uploadBar}>
         <View style={{ flex: 1 }}>
           <Text style={st.uploadBarLabel}>Your uploads: {myMediaCount} / {mediaLimit}</Text>
@@ -865,7 +854,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         )}
       </View>
 
-      {/* Content */}
       {loading ? (
         <View style={st.loadingCenter}><ActivityIndicator color={C.accent} size="large" /></View>
       ) : currentlyLocked ? (
@@ -923,7 +911,6 @@ function CapsuleDetailScreen({ capsule: initialCapsule, userId, isPaid, onBack, 
         />
       )}
 
-      {/* Members modal */}
       <Modal visible={showMembers} animationType="slide" presentationStyle="formSheet"
         onRequestClose={() => setShowMembers(false)}>
         <View style={st.modalContainer}>
@@ -985,14 +972,10 @@ export default function TripsScreen() {
   const { prompt: biometricPrompt } = useBiometricSetting();
   const headerAnim = useRef(new Animated.Value(0)).current;
 
-  // Stable refs — prevent realtime/polling callbacks from going stale
   const userIdRef = useRef('');
-  const loadCapsulesRef = useRef<((uid: string, isRefresh?: boolean) => Promise<void>) | undefined>(undefined)
+  const loadCapsulesRef = useRef<((uid: string, isRefresh?: boolean) => Promise<void>) | undefined>(undefined);
 
-  // ── Load capsules ─────────────────────────────────────────────────────
   const loadCapsules = useCallback(async (uId: string, isRefresh = false) => {
-    // Only show the full-screen spinner on the very first load.
-    // Pull-to-refresh and polling use setRefreshing instead.
     if (!isRefresh) setLoading(true);
     try {
       const { data: memberships } = await supabase
@@ -1025,11 +1008,9 @@ export default function TripsScreen() {
     }
   }, []);
 
-  // Keep ref current every render
   useEffect(() => { loadCapsulesRef.current = loadCapsules; }, [loadCapsules]);
   useEffect(() => { userIdRef.current = userId; }, [userId]);
 
-  // ── Init ─────────────────────────────────────────────────────────────
   const initUser = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -1065,19 +1046,16 @@ export default function TripsScreen() {
     Animated.timing(headerAnim, { toValue: 1, duration: 600, useNativeDriver: true }).start();
   }, []);
 
-  // ── Single realtime channel + 30s polling fallback ────────────────────
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel(`trips-realtime-${userId}`)
-      // Membership added/removed → reload list
       .on('postgres_changes', {
         event: '*', schema: 'public',
         table: 'travel_capsule_members',
         filter: `user_id=eq.${userId}`,
       }, () => loadCapsulesRef.current?.(userIdRef.current, true))
-      // Capsule updated (unlocked, etc.) → patch in place
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public',
         table: 'travel_capsules',
@@ -1085,12 +1063,10 @@ export default function TripsScreen() {
         setCapsules(prev =>
           prev.map(c => c.id === payload.new.id ? { ...c, ...payload.new } : c)
         );
-        // Keep active capsule in sync too
         setActiveCapsule(prev =>
           prev?.id === payload.new.id ? { ...prev, ...(payload.new as TravelCapsule) } : prev
         );
       })
-      // New media → bump count on list card
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public',
         table: 'travel_capsule_media',
@@ -1104,7 +1080,6 @@ export default function TripsScreen() {
       })
       .subscribe();
 
-    // Polling fallback — fires even when realtime WebSocket drops
     const poll = setInterval(
       () => loadCapsulesRef.current?.(userIdRef.current, true),
       POLL_INTERVAL_MS
@@ -1116,14 +1091,12 @@ export default function TripsScreen() {
     };
   }, [userId]);
 
-  // ── Pull-to-refresh ───────────────────────────────────────────────────
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await loadCapsules(userId, true);
     setRefreshing(false);
   }, [userId, loadCapsules]);
 
-  // ── Delete ────────────────────────────────────────────────────────────
   const handleDelete = (capsule: TravelCapsule) => {
     if (capsule.created_by !== userId) {
       Alert.alert('Cannot delete', 'Only the creator can delete this capsule.'); return;
@@ -1140,7 +1113,6 @@ export default function TripsScreen() {
     ]);
   };
 
-  // ── Detail view ───────────────────────────────────────────────────────
   if (activeCapsule) {
     return (
       <CapsuleDetailScreen
@@ -1156,7 +1128,6 @@ export default function TripsScreen() {
     );
   }
 
-  // ── List view ─────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={st.root} edges={['top']}>
       <Animated.View style={[st.heroHeader, {
@@ -1302,6 +1273,15 @@ const st = StyleSheet.create({
   statNum: { fontSize: 15, fontWeight: '700', color: C.textPrimary },
   statLabel: { fontSize: 11, color: C.textSecondary, marginTop: 1 },
   statDivider: { width: 1, height: 24, backgroundColor: C.border, marginHorizontal: 12 },
+  // ⋯ menu button
+  menuBtn: {
+    padding: 6, marginLeft: 8,
+    backgroundColor: C.surfaceHigh, borderRadius: 8,
+    borderWidth: 1, borderColor: C.border,
+    alignItems: 'center', justifyContent: 'center',
+    minWidth: 32, minHeight: 32,
+  },
+  menuBtnText: { color: C.textSecondary, fontSize: 18, lineHeight: 18 },
   ghostCard: {
     backgroundColor: C.surfaceHigh, borderRadius: 16, borderWidth: 1,
     borderColor: C.border, borderStyle: 'dashed', padding: 24,
@@ -1481,7 +1461,7 @@ const st = StyleSheet.create({
     borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8,
   },
   myUploadNoteText: { color: C.locked, fontSize: 13, fontWeight: '600' },
-  gridItem: { flex: 1 / 3, margin: 1, aspectRatio: 1 },
+  gridItem: { flex: 1 / 3, margin: 1, aspectRatio: 1, overflow: 'hidden' },
   gridImage: { width: '100%', height: '100%' },
   videoOverlay: {
     ...StyleSheet.absoluteFillObject as any,
